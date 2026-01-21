@@ -479,7 +479,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             "query_uuid": getattr(args, "query_uuid", None),
             "comparison_uuid": getattr(args, "comparison_uuid", None),
         }
-        print(json.dumps(error_payload, indent=2), file=sys.stderr)
+        print(json.dumps(error_payload, indent=2, default=str), file=sys.stderr)
         return 1
     except Exception as exc:
         if not getattr(args, "disable_telemetry", False):
@@ -502,7 +502,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             "query_uuid": getattr(args, "query_uuid", None),
             "comparison_uuid": getattr(args, "comparison_uuid", None),
         }
-        print(json.dumps(error_payload, indent=2), file=sys.stderr)
+        print(json.dumps(error_payload, indent=2, default=str), file=sys.stderr)
         return 1
 
     # Print JSON to stdout for Cortex Code to consume.

@@ -53,7 +53,7 @@ def log_event(
 ) -> bool:
     try:
         ident = _get_identity(session)
-        ctx_json = json.dumps(context or {})
+        ctx_json = json.dumps(context or {}, default=str)
 
         if error_message and len(error_message) > 500:
             error_message = error_message[:497] + "..."
