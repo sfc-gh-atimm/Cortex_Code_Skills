@@ -24,13 +24,8 @@ from typing import Any, Dict, Optional
 
 APP_ROOT = Path(__file__).resolve().parents[3]
 SKILL_ROOT = Path(__file__).resolve().parents[1] / "hybrid-table-query-analyzer"
-SNOWSIGHT_APP_ROOT = os.getenv(
-    "SNOWSIGHT_APP_ROOT",
-    "/Users/atimm/Documents/Unistore/General_Cusotmer_query/snowsight_app",
-)
-EXTRA_ROOTS = [Path(SNOWSIGHT_APP_ROOT)] if SNOWSIGHT_APP_ROOT else []
 
-for path in (APP_ROOT, SKILL_ROOT, *EXTRA_ROOTS):
+for path in (APP_ROOT, SKILL_ROOT):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 

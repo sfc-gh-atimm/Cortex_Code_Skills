@@ -1,7 +1,7 @@
 import json
 from typing import Any, Dict
 
-from snowvi_features import extract_snowvi_features
+from .snowvi_features import extract_snowvi_features
 
 
 def load_snowvi_json(path: str) -> Dict[str, Any]:

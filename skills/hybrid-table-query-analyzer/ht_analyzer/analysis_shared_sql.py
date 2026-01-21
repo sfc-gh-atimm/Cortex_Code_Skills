@@ -15,7 +15,7 @@ except Exception:
 
 SNOWVI_PARSER_AVAILABLE = False
 try:
-    from snowvi_parser import (
+    from .snowvi_parser import (
         enrich_coverage_with_snowvi_index_metadata,
         extract_ht_index_metadata_from_snowvi_json,
         extract_ht_index_operators_from_snowvi_json,
