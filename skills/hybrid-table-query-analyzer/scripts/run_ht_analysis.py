@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 APP_ROOT = Path(__file__).resolve().parents[3]
-SKILL_ROOT = Path(__file__).resolve().parents[1] / "hybrid-table-query-analyzer"
+SKILL_ROOT = Path(__file__).resolve().parents[1]
 
 for path in (APP_ROOT, SKILL_ROOT):
     if str(path) not in sys.path:
@@ -71,6 +71,105 @@ def _extract_query_uuid_from_snowvi(snowvi_json: Dict[str, Any]) -> Optional[str
             if value:
                 return str(value)
     return None
+
+
+def _extract_deployment_from_snowvi(snowvi_json: Dict[str, Any]) -> Optional[str]:
+    """Extract deployment name from SnowVI JSON to avoid slow Snowhouse lookup."""
+    if not isinstance(snowvi_json, dict):
+        return None
+    query_overview = (
+        snowvi_json.get("queryData", {})
+        .get("data", {})
+        .get("globalInfo", {})
+        .get("queryOverview", {})
+    )
+    if isinstance(query_overview, dict):
+        return query_overview.get("deploymentName")
+    return None
+
+
+def _extract_metadata_from_snowvi(snowvi_json: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Extract query metadata from SnowVI JSON to avoid slow Snowhouse lookup.
+    Returns a dict with keys matching the Snowhouse metadata format.
+    """
+    if not isinstance(snowvi_json, dict):
+        return {}
+    
+    overview = (
+        snowvi_json.get("queryData", {})
+        .get("data", {})
+        .get("globalInfo", {})
+        .get("queryOverview", {})
+    )
+    if not isinstance(overview, dict):
+        return {}
+    
+    # Map SnowVI fields to Snowhouse metadata format
+    meta = {
+        "QUERY_ID": overview.get("id"),
+        "QUERY_TEXT": overview.get("sqlText"),
+        "DATABASE_NAME": overview.get("databaseName"),
+        "SCHEMA_NAME": overview.get("schemaName"),
+        "USER_NAME": overview.get("userName"),
+        "WAREHOUSE_NAME": overview.get("warehouseName"),
+        "WAREHOUSE_SIZE": overview.get("warehouseExternalSize", "N/A"),
+        "DEPLOYMENT": overview.get("deploymentName"),
+        "EXECUTION_STATUS": overview.get("status"),
+        "ERROR_CODE": overview.get("errorCode"),
+        "ERROR_MESSAGE": overview.get("errorMessage"),
+        "SESSION_ID": overview.get("sessionIdAsString") or overview.get("sessionId"),
+        "REQUEST_ID": overview.get("requestId"),
+        
+        # Timing fields
+        "TOTAL_DURATION": overview.get("totalDuration"),
+        "TOTAL_ELAPSED_TIME": overview.get("totalDuration"),
+        "COMPILATION_TIME": overview.get("gsCompileDuration"),
+        "DUR_COMPILING": str(overview.get("gsCompileDuration", "")),
+        "DUR_GS_EXECUTING": str(overview.get("gsExecDuration", "")),
+        "DUR_XP_EXECUTING": str(overview.get("xpExecDuration", "")),
+        
+        # Timestamps - convert from epoch ms to ISO format if present
+        "START_TIME": overview.get("startTime"),
+        "END_TIME": overview.get("endTime"),
+        "CLIENT_SEND_TIME": overview.get("clientSendTime"),
+        "CREATED_ON": overview.get("creationTime"),
+        
+        # Query characteristics
+        "QUERY_TYPE": str(overview.get("queryProperties", "")),
+        "QUERY_PARAMETERIZED_HASH": overview.get("parameterizedQueryHash") or overview.get("sqlQueryHash"),
+        "CACHEDPLANID": overview.get("plancacheOriginalJobUuid"),
+        
+        # I/O and performance (from stats if available)
+        "ROWS_PRODUCED": None,
+        "ACCESS_KV_TABLE": None,
+        "FDB_IO_BYTES": None,
+        "SNOWTRAM_FDB_IO_BYTES": None,
+    }
+    
+    # Extract stats if available
+    stats = overview.get("stats", {})
+    if isinstance(stats, dict):
+        meta["ROWS_PRODUCED"] = stats.get("rowsProduced") or stats.get("outputRows")
+        meta["FDB_IO_BYTES"] = stats.get("fdbIoBytes")
+        meta["SNOWTRAM_FDB_IO_BYTES"] = stats.get("snowtramFdbIoBytes")
+        # Check for HT/KV access
+        if stats.get("fdbIoBytes") or stats.get("snowtramFdbIoBytes"):
+            meta["ACCESS_KV_TABLE"] = True
+    
+    # Try to get account info from other places in the JSON
+    meta["ACCOUNT_ID"] = overview.get("accountId")
+    
+    return {k: v for k, v in meta.items() if v is not None}
+
+
+def _merge_metadata(snowvi_meta: Dict[str, Any], snowhouse_meta: Dict[str, Any]) -> Dict[str, Any]:
+    """Merge metadata from SnowVI and Snowhouse, preferring SnowVI values."""
+    merged = dict(snowhouse_meta)  # Start with Snowhouse as base
+    for key, value in snowvi_meta.items():
+        if value is not None:
+            merged[key] = value
+    return merged
 
 
 def _build_customer_info(meta: Dict[str, Any], deployment: Optional[str]) -> Dict[str, Any]:
@@ -242,7 +341,7 @@ try:
     )
     from ht_analyzer.llm import (
         generate_next_steps_for_ase,
-        generate_customer_email,
+        set_session as set_llm_session,
     )
     from ht_analyzer.telemetry_cli import (
         log_error as telemetry_log_error,
@@ -281,8 +380,8 @@ except ImportError:
     def generate_next_steps_for_ase(analysis_features, candidate_actions):
         return "Next steps placeholder – wire to Cortex COMPLETE."
 
-    def generate_customer_email(analysis_features, candidate_actions):
-        return None
+    def set_llm_session(session):
+        pass
 
     def telemetry_log_error(*args, **kwargs):
         return False
@@ -336,13 +435,6 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     )
 
     parser.add_argument(
-        "--include-email",
-        dest="include_email",
-        action="store_true",
-        help="If set, generate a customer-facing email draft as well.",
-    )
-
-    parser.add_argument(
         "--snowhouse-connection",
         dest="snowhouse_connection",
         default="snowhouse",
@@ -361,10 +453,9 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         help="If set, include a SnowVI link for the query in the JSON output.",
     )
     parser.add_argument(
-        "--disable-telemetry",
-        dest="disable_telemetry",
+        "--debug",
         action="store_true",
-        help="If set, disable telemetry logging (enabled by default).",
+        help="Print progress messages to stderr and disable telemetry.",
     )
 
     return parser.parse_args(argv)
@@ -377,8 +468,16 @@ def run_analysis(args: argparse.Namespace) -> Dict[str, Any]:
     This function is intentionally thin and delegates logic to shared library
     functions so that Streamlit and Cortex Code share the exact same stack.
     """
+    start_time = time.time()
+    debug = getattr(args, 'debug', False)
+    def log(msg: str):
+        if debug:
+            elapsed = time.time() - start_time
+            print(f"[{elapsed:6.1f}s] {msg}", file=sys.stderr, flush=True)
+
     snowvi_features: Dict[str, Any] = {}
     snowvi_json = None
+    
     if args.snowvi_path:
         snowvi_json = load_snowvi_json(args.snowvi_path)
 
@@ -396,23 +495,52 @@ def run_analysis(args: argparse.Namespace) -> Dict[str, Any]:
     if args.mode == "single" and comparison_uuid:
         raise SkillError("--comparison-uuid requires --mode compare", code="INVALID_COMPARISON_MODE")
 
-    start_time = time.time()
-
     # 1) Create Snowhouse session
+    log("Creating Snowhouse session...")
     session = create_snowhouse_session(connection_name=args.snowhouse_connection)
+    set_llm_session(session)  # Wire up LLM module to use this session
+    log("Session created")
 
-    # 2) Resolve deployment if needed
-    deployment = args.deployment or resolve_deployment_for_uuid(
-        session=session,
-        uuid=query_uuid,
-    )
+    # 2) Resolve deployment - prefer SnowVI extraction (fast) over Snowhouse lookup (slow)
+    deployment = args.deployment
+    if not deployment and snowvi_json:
+        deployment = _extract_deployment_from_snowvi(snowvi_json)
+        if deployment:
+            log(f"Deployment from SnowVI: {deployment}")
+    if not deployment:
+        log("Resolving deployment from Snowhouse (slow)...")
+        deployment = resolve_deployment_for_uuid(
+            session=session,
+            uuid=query_uuid,
+        )
+        log(f"Deployment: {deployment}")
 
-    # 3) Fetch core query metadata from Snowhouse (JOB_ETL / usage tracking views)
-    meta = fetch_query_metadata(
-        session=session,
-        uuid=query_uuid,
-        deployment=deployment,
-    )
+    # 3) Fetch query metadata - prefer SnowVI (instant) with Snowhouse fallback/enrichment
+    meta = {}
+    snowvi_meta = {}
+    if snowvi_json:
+        log("Extracting metadata from SnowVI...")
+        snowvi_meta = _extract_metadata_from_snowvi(snowvi_json)
+        log(f"SnowVI metadata: {len(snowvi_meta)} fields")
+    
+    # Fetch from Snowhouse to get fields not in SnowVI (like ACCOUNT_ID, detailed stats)
+    # or if no SnowVI was provided
+    if not snowvi_meta or args.include_history_table:
+        log("Fetching query metadata from Snowhouse...")
+        snowhouse_meta = fetch_query_metadata(
+            session=session,
+            uuid=query_uuid,
+            deployment=deployment,
+        )
+        log(f"Snowhouse metadata: {len(snowhouse_meta)} fields")
+        # Merge: SnowVI values take precedence, Snowhouse fills gaps
+        meta = _merge_metadata(snowvi_meta, snowhouse_meta)
+    else:
+        meta = snowvi_meta
+        # Ensure deployment is set
+        meta["DEPLOYMENT"] = deployment
+    
+    log(f"Final metadata: {len(meta)} fields")
 
     snowvi_link = None
     if args.include_snowvi_link:
@@ -424,10 +552,14 @@ def run_analysis(args: argparse.Namespace) -> Dict[str, Any]:
 
     # 4) Optional SnowVI enrichment
     if snowvi_json:
+        log("Extracting SnowVI features...")
         snowvi_features = extract_snowvi_features(snowvi_json)
+        log(f"SnowVI features extracted, {len(snowvi_features)} fields")
 
     # 5) History / anomaly context (e.g., parameterized hash behavior)
+    log("Fetching history context...")
     history_ctx = fetch_history_context(session=session, meta=meta)
+    log("History context fetched")
     history_table_payload = {"history_table": [], "history_chart_markdown": None}
     if args.include_history_table:
         history_df, history_error = get_query_history_for_hash(
@@ -445,6 +577,7 @@ def run_analysis(args: argparse.Namespace) -> Dict[str, Any]:
             history_table_payload = _build_history_table_and_chart(history_df)
 
     # 6) Build deterministic feature set (no LLMs yet)
+    log("Building analysis features...")
     analysis_features = build_analysis_features(
         meta=meta,
         snowvi_features=snowvi_features,
@@ -461,23 +594,23 @@ def run_analysis(args: argparse.Namespace) -> Dict[str, Any]:
     if comparison_uuid:
         analysis_features.setdefault("comparison_uuid", comparison_uuid)
 
+    log("Analysis features built")
+
     # 7) Build candidate actions (DDL, query rewrites, mitigations)
+    log("Building candidate actions...")
     candidate_actions = build_candidate_actions(analysis_features)
+    log(f"Candidate actions: {len(candidate_actions)}")
 
     # 8) AI-based explanation / next steps using Cortex (via ht_analyzer.llm)
+    log("Calling Cortex LLM for ASE next steps...")
     next_steps_markdown = generate_next_steps_for_ase(
         analysis_features,
         candidate_actions=candidate_actions,
     )
-
-    customer_email_markdown = None
-    if args.include_email:
-        customer_email_markdown = generate_customer_email(
-            analysis_features,
-            candidate_actions=candidate_actions,
-        )
+    log("ASE next steps generated")
 
     # 9) Assemble JSON payload
+    log("Assembling final JSON payload...")
     # Cursor TODO:
     #   You can align this exactly with the ANALYSIS_SCHEMA that the Streamlit app uses.
     customer_info = _build_customer_info(meta, deployment)
@@ -503,14 +636,13 @@ def run_analysis(args: argparse.Namespace) -> Dict[str, Any]:
         "analysis": analysis_features,
         "candidate_actions": candidate_actions,
         "next_steps_markdown": next_steps_markdown,
-        "customer_email_markdown": customer_email_markdown,
         "history_context": history_ctx,
         # Optional convenience fields if present in analysis_features:
         "grade": analysis_features.get("grade"),
         "score": analysis_features.get("score"),
     }
 
-    if not args.disable_telemetry:
+    if not debug:
         bp_findings = analysis_features.get("bp_findings", {}) or {}
         num_findings = len(bp_findings.get("errors", [])) + len(bp_findings.get("warnings", []))
         telemetry_track_analysis(
@@ -538,7 +670,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     try:
         result = run_analysis(args)
     except SkillError as exc:
-        if not getattr(args, "disable_telemetry", False):
+        if not getattr(args, "debug", False):
             try:
                 session = create_snowhouse_session(connection_name=args.snowhouse_connection)
                 telemetry_log_error(
@@ -561,7 +693,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         print(json.dumps(error_payload, indent=2, default=str), file=sys.stderr)
         return 1
     except Exception as exc:
-        if not getattr(args, "disable_telemetry", False):
+        if not getattr(args, "debug", False):
             try:
                 session = create_snowhouse_session(connection_name=args.snowhouse_connection)
                 telemetry_log_error(
