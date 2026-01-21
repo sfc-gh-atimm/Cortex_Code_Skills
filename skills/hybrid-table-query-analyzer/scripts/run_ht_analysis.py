@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import time
 import os
 import re
 import sys
@@ -56,6 +57,115 @@ def _validate_uuid(value: str, field: str) -> str:
         return f"{value[0:8]}-{value[8:12]}-{value[12:16]}-{value[16:20]}-{value[20:32]}"
     raise SkillError(f"{field} must be a UUID (xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx)", code="INVALID_UUID")
 
+
+def _extract_query_uuid_from_snowvi(snowvi_json: Dict[str, Any]) -> Optional[str]:
+    if not isinstance(snowvi_json, dict):
+        return None
+    direct = snowvi_json.get("queryId")
+    if direct:
+        return str(direct)
+    query_overview = (
+        snowvi_json.get("queryData", {})
+        .get("data", {})
+        .get("globalInfo", {})
+        .get("queryOverview", {})
+    )
+    if isinstance(query_overview, dict):
+        for key in ("uuid", "id", "queryId"):
+            value = query_overview.get(key)
+            if value:
+                return str(value)
+    return None
+
+
+def _build_customer_info(meta: Dict[str, Any], deployment: Optional[str]) -> Dict[str, Any]:
+    return {
+        "name": meta.get("ACCOUNT_NAME") or meta.get("ACCOUNT") or meta.get("ACCOUNT_LOCATOR"),
+        "account_id": meta.get("ACCOUNT_ID"),
+        "deployment": deployment,
+    }
+
+
+def _build_best_practices_summary(bp_findings: Dict[str, Any]) -> Dict[str, Any]:
+    errors = bp_findings.get("errors", []) or []
+    warnings = bp_findings.get("warnings", []) or []
+    passed = bp_findings.get("passed", []) or []
+    return {
+        "grade": bp_findings.get("grade"),
+        "score": bp_findings.get("score"),
+        "workload_type": bp_findings.get("workload_type"),
+        "errors": len(errors),
+        "warnings": len(warnings),
+        "passed": len(passed),
+    }
+
+
+def _build_history_table_and_chart(history_df) -> Dict[str, Any]:
+    if history_df is None or getattr(history_df, "empty", False):
+        return {"history_table": [], "history_chart_markdown": None}
+
+    table = []
+    for _, row in history_df.iterrows():
+        table.append(
+            {
+                "execution_date": str(row.get("EXECUTION_DATE") or row.get("execution_date")),
+                "execution_count": int(row.get("EXECUTION_COUNT") or row.get("execution_count") or 0),
+                "p50_latency": float(row.get("P50_LATENCY") or row.get("p50_latency") or 0),
+                "p95_latency": float(row.get("P95_LATENCY") or row.get("p95_latency") or 0),
+                "p99_latency": float(row.get("P99_LATENCY") or row.get("p99_latency") or 0),
+            }
+        )
+
+    labels = [row["execution_date"] for row in table]
+    p50 = [row["p50_latency"] for row in table]
+    p95 = [row["p95_latency"] for row in table]
+    p99 = [row["p99_latency"] for row in table]
+
+    chart = "\n".join(
+        [
+            "```mermaid",
+            "xychart-beta",
+            "  title: Query Latency (ms)",
+            f"  x-axis: [{', '.join(labels)}]",
+            "  y-axis: \"Latency (ms)\"",
+            f"  series: P50: [{', '.join(f'{v:.0f}' for v in p50)}]",
+            f"  series: P95: [{', '.join(f'{v:.0f}' for v in p95)}]",
+            f"  series: P99: [{', '.join(f'{v:.0f}' for v in p99)}]",
+            "```",
+        ]
+    )
+
+    return {"history_table": table, "history_chart_markdown": chart}
+
+
+def _build_summary_markdown(customer_info: Dict[str, Any], best_practices: Dict[str, Any]) -> str:
+    customer_lines = [
+        "| Field | Value |",
+        "| --- | --- |",
+        f"| Customer | {customer_info.get('name') or 'Unknown'} |",
+        f"| Account ID | {customer_info.get('account_id') or 'Unknown'} |",
+        f"| Deployment | {customer_info.get('deployment') or 'Unknown'} |",
+    ]
+    bp_lines = [
+        "| Field | Value |",
+        "| --- | --- |",
+        f"| Grade | {best_practices.get('grade') or 'N/A'} |",
+        f"| Score | {best_practices.get('score') if best_practices.get('score') is not None else 'N/A'} |",
+        f"| Workload Type | {best_practices.get('workload_type') or 'N/A'} |",
+        f"| Errors | {best_practices.get('errors', 0)} |",
+        f"| Warnings | {best_practices.get('warnings', 0)} |",
+        f"| Passed | {best_practices.get('passed', 0)} |",
+    ]
+    return "\n".join(
+        [
+            "### Customer Info",
+            *customer_lines,
+            "",
+            "### Best Practices Summary",
+            *bp_lines,
+        ]
+    )
+
 # Cursor TODO:
 #   Wire these imports to your actual app code. The names are chosen
 #   to mirror the existing Streamlit modules conceptually.
@@ -65,6 +175,7 @@ try:
         resolve_deployment_for_uuid,
         fetch_query_metadata,
         fetch_history_context,
+        get_query_history_for_hash,
     )
     from ht_analyzer.snowvi import (
         load_snowvi_json,
@@ -77,6 +188,11 @@ try:
     from ht_analyzer.llm import (
         generate_next_steps_for_ase,
         generate_customer_email,
+    )
+    from ht_analyzer.telemetry_cli import (
+        log_error as telemetry_log_error,
+        track_analysis as telemetry_track_analysis,
+        TelemetryEvents,
     )
 except ImportError:
     # Minimal fallback so the file is syntactically valid even before wiring.
@@ -110,6 +226,15 @@ except ImportError:
     def generate_customer_email(analysis_features, candidate_actions):
         return None
 
+    def telemetry_log_error(*args, **kwargs):
+        return False
+
+    def telemetry_track_analysis(*args, **kwargs):
+        return False
+
+    class TelemetryEvents:
+        ERROR_ANALYSIS = "ERROR_ANALYSIS"
+
 
 def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     """
@@ -123,8 +248,7 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         "--uuid",
         "--query-uuid",
         dest="query_uuid",
-        required=True,
-        help="Snowflake job/query UUID to analyze.",
+        help="Snowflake job/query UUID to analyze (optional if --snowvi-path is provided).",
     )
 
     parser.add_argument(
@@ -166,6 +290,18 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         default="snowhouse",
         help="Snowflake CLI connection name for Snowhouse (default: snowhouse).",
     )
+    parser.add_argument(
+        "--include-history-table",
+        dest="include_history_table",
+        action="store_true",
+        help="If set, include query history table and a simple timeline chart.",
+    )
+    parser.add_argument(
+        "--disable-telemetry",
+        dest="disable_telemetry",
+        action="store_true",
+        help="If set, disable telemetry logging (enabled by default).",
+    )
 
     return parser.parse_args(argv)
 
@@ -177,7 +313,16 @@ def run_analysis(args: argparse.Namespace) -> Dict[str, Any]:
     This function is intentionally thin and delegates logic to shared library
     functions so that Streamlit and Cortex Code share the exact same stack.
     """
-    query_uuid = _validate_uuid(args.query_uuid, "query_uuid")
+    snowvi_features: Dict[str, Any] = {}
+    snowvi_json = None
+    if args.snowvi_path:
+        snowvi_json = load_snowvi_json(args.snowvi_path)
+
+    query_uuid = args.query_uuid or _extract_query_uuid_from_snowvi(snowvi_json or {})
+    if not query_uuid:
+        raise SkillError("query_uuid is required unless provided via SnowVI JSON", code="INVALID_UUID")
+    query_uuid = _validate_uuid(query_uuid, "query_uuid")
+
     comparison_uuid = None
     if args.comparison_uuid:
         comparison_uuid = _validate_uuid(args.comparison_uuid, "comparison_uuid")
@@ -186,6 +331,8 @@ def run_analysis(args: argparse.Namespace) -> Dict[str, Any]:
         raise SkillError("--mode compare requires --comparison-uuid", code="INVALID_COMPARISON_MODE")
     if args.mode == "single" and comparison_uuid:
         raise SkillError("--comparison-uuid requires --mode compare", code="INVALID_COMPARISON_MODE")
+
+    start_time = time.time()
 
     # 1) Create Snowhouse session
     session = create_snowhouse_session(connection_name=args.snowhouse_connection)
@@ -204,17 +351,26 @@ def run_analysis(args: argparse.Namespace) -> Dict[str, Any]:
     )
 
     # 4) Optional SnowVI enrichment
-    snowvi_features: Dict[str, Any] = {}
-    snowvi_json = None
-    if args.snowvi_path:
-        snowvi_json = load_snowvi_json(args.snowvi_path)
-        snowvi_features = extract_snowvi_features(
-            snowvi_json=snowvi_json,
-            meta=meta,
-        )
+    if snowvi_json:
+        snowvi_features = extract_snowvi_features(snowvi_json)
 
     # 5) History / anomaly context (e.g., parameterized hash behavior)
     history_ctx = fetch_history_context(session=session, meta=meta)
+    history_table_payload = {"history_table": [], "history_chart_markdown": None}
+    if args.include_history_table:
+        history_df, history_error = get_query_history_for_hash(
+            session=session,
+            metadata=meta,
+            days=30,
+        )
+        if history_error:
+            history_table_payload = {
+                "history_table": [],
+                "history_chart_markdown": None,
+                "history_table_error": history_error,
+            }
+        else:
+            history_table_payload = _build_history_table_and_chart(history_df)
 
     # 6) Build deterministic feature set (no LLMs yet)
     analysis_features = build_analysis_features(
@@ -252,6 +408,8 @@ def run_analysis(args: argparse.Namespace) -> Dict[str, Any]:
     # 9) Assemble JSON payload
     # Cursor TODO:
     #   You can align this exactly with the ANALYSIS_SCHEMA that the Streamlit app uses.
+    customer_info = _build_customer_info(meta, deployment)
+    best_practices_summary = _build_best_practices_summary(analysis_features.get("bp_findings", {}))
     result: Dict[str, Any] = {
         "status": "ok",
         "schema_version": SCHEMA_VERSION,
@@ -259,6 +417,10 @@ def run_analysis(args: argparse.Namespace) -> Dict[str, Any]:
         "query_uuid": query_uuid,
         "comparison_uuid": comparison_uuid,
         "deployment": deployment,
+        "customer_info": customer_info,
+        "best_practices_summary": best_practices_summary,
+        "summary_markdown": _build_summary_markdown(customer_info, best_practices_summary),
+        **history_table_payload,
         "analysis": analysis_features,
         "candidate_actions": candidate_actions,
         "next_steps_markdown": next_steps_markdown,
@@ -268,6 +430,22 @@ def run_analysis(args: argparse.Namespace) -> Dict[str, Any]:
         "grade": analysis_features.get("grade"),
         "score": analysis_features.get("score"),
     }
+
+    if not args.disable_telemetry:
+        bp_findings = analysis_features.get("bp_findings", {}) or {}
+        num_findings = len(bp_findings.get("errors", [])) + len(bp_findings.get("warnings", []))
+        telemetry_track_analysis(
+            session=session,
+            query_uuid=query_uuid,
+            analysis_mode=args.mode,
+            snowflake_account_id=meta.get("ACCOUNT_ID"),
+            deployment=deployment,
+            duration_ms=int((time.time() - start_time) * 1000),
+            num_findings=num_findings,
+            snowvi_enriched=bool(snowvi_json),
+            quick_mode=False,
+            extra_context={"client": "skill"},
+        )
 
     return result
 
@@ -281,6 +459,17 @@ def main(argv: Optional[list[str]] = None) -> int:
     try:
         result = run_analysis(args)
     except SkillError as exc:
+        if not getattr(args, "disable_telemetry", False):
+            try:
+                session = create_snowhouse_session(connection_name=args.snowhouse_connection)
+                telemetry_log_error(
+                    session=session,
+                    action_type=TelemetryEvents.ERROR_ANALYSIS,
+                    error=exc,
+                    context={"query_uuid": getattr(args, "query_uuid", None), "client": "skill"},
+                )
+            except Exception:
+                pass
         error_payload = {
             "status": "error",
             "schema_version": SCHEMA_VERSION,
@@ -293,6 +482,17 @@ def main(argv: Optional[list[str]] = None) -> int:
         print(json.dumps(error_payload, indent=2), file=sys.stderr)
         return 1
     except Exception as exc:
+        if not getattr(args, "disable_telemetry", False):
+            try:
+                session = create_snowhouse_session(connection_name=args.snowhouse_connection)
+                telemetry_log_error(
+                    session=session,
+                    action_type=TelemetryEvents.ERROR_ANALYSIS,
+                    error=exc,
+                    context={"query_uuid": getattr(args, "query_uuid", None), "client": "skill"},
+                )
+            except Exception:
+                pass
         error_payload = {
             "status": "error",
             "schema_version": SCHEMA_VERSION,

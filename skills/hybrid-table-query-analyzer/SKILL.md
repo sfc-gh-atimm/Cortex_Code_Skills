@@ -73,11 +73,14 @@ The primary inputs are:
 
 - **Required**
   - `query_uuid`: The Snowflake job UUID for the query to analyze  
+    - If omitted, and `snowvi_path` is provided, the skill will attempt to infer `query_uuid` from the SnowVI JSON.
 
 - **Optional**
   - `deployment`: Snowflake deployment (e.g. `azeastus2prod`); if omitted, resolve via Snowhouse as the app does
   - `snowvi_path`: Local path to a SnowVI JSON export for this query (if available)
   - `comparison_uuid`: A second UUID to compare against (before/after analysis)
+  - `include_history_table`: Include query history table + timeline chart in output
+  - `disable_telemetry`: Disable telemetry logging (enabled by default)
   - `symptom`: Optional symptom category (e.g. `latency_spikes`, `timeouts`, `quota_issues`)
   - `symptom_description`: Free-text description of what the customer is seeing
 
@@ -96,8 +99,9 @@ At a high level, the skill should follow this workflow:
 
 2. **Parameter Collection & Validation**
    - Ask the user for:
-     - `query_uuid` (required)
+     - `query_uuid` (optional if `snowvi_path` provided)
      - Optional `deployment`, `snowvi_path`, `comparison_uuid`, `symptom`, `symptom_description`
+   - If `query_uuid` is not provided, attempt to infer it from SnowVI JSON.
    - Validate basic UUID shape and that required values are non-empty.
 
 3. **Metadata Fetch (Snowhouse)**
@@ -121,55 +125,56 @@ At a high level, the skill should follow this workflow:
      - Merge these into the same feature structures used by the Snowsight app.
 
 5. **Deterministic Classification & Candidate Actions (Code Side)**
-   - Reuse (or mirror) the existing app logic to compute:
-     - `bp_findings` (grade, errors, warnings, workload type, flags for bulk DML, UDTF, scalar UDF, etc.)
-     - `sql_findings` from static SQL analysis, if available
+   - **Implemented in this skill** (deterministic, no LLMs):
+     - `bp_findings` (grade, errors, warnings, workload type, bulk flags, etc.)
+     - `sql_findings` from static SQL analysis
      - `coverage` list for relevant Hybrid Tables
      - `history_context` / anomaly classification
-     - `candidate_actions`: a list of **allowed** concrete recommendations (indexes, query rewrites, engine choice, bulk-load mitigations, etc.) with:
+     - `candidate_actions`: a list of **allowed** concrete recommendations with:
        - `id`, `kind`, `ddl_sql`, `estimated_impact`, `risk_level`
-   - This step should **not** rely on LLMs; it should be **deterministic code** mirroring the Streamlit app’s implementation.
+   - Implementation modules:
+     - `ht_analyzer/analysis.py` (orchestration)
+     - `ht_analyzer/analysis_shared.py` (best‑practice logic)
+     - `ht_analyzer/analysis_shared_sql.py` (SQL analysis + coverage + plan hints)
 
 6. **AI-Based Explanation (LLM)**
-   - Call Snowflake Cortex (via Python or SQL) using the same patterns as the app:
-     - **Next Steps for ASE**:
-       - System prompt: “You are a Snowflake Solutions Architect helping an ASE with tactical execution steps…”
-       - User prompt: include:
-         - Metadata summary
-         - Best-practices findings
-         - SQL findings
-         - Coverage + index context
-         - History context
-         - **Candidate actions JSON** with strict contract (“you may only choose from these actions; do not invent DDL”)
-       - Model: `claude-3-5-sonnet` (or configured default)
-       - Output: short, numbered markdown list of 3–5 concrete steps
-     - **Optional Customer Email**:
-       - System prompt: “You are a Snowflake Solutions Engineer drafting a technical email to the customer’s engineering team…”
-       - User prompt: include:
-         - Severity + key findings
-         - Index coverage
-         - Suggested DDL
-       - Output: markdown email body (no subject line).
+   - Calls Snowflake Cortex via `ht_analyzer.llm` to generate:
+     - `next_steps_markdown` (ASE-facing steps)
+     - `customer_email_markdown` (optional email body)
 
-7. **Structured JSON Output**
-   - The Python script should return a JSON object with the following shape (Cursor can implement this):
+7. **Structured JSON Output (Actual)**
+   - The Python script returns JSON with this shape:
 
-   ```jsonc
-   {
-     "query_uuid": "string",
-     "deployment": "string",
-     "grade": "A–F",
-     "score": 0,
-     "bp_findings": { /* as in app */ },
-     "sql_findings": [ /* as in app */ ],
-     "coverage": [ /* HT coverage + index info */ ],
-     "history_context": { /* anomaly / always-slow framing */ },
-     "plan_cache_status": { /* if implemented */ },
-     "analysis_schema": { /* matches ANALYSIS_SCHEMA in app */ },
-     "next_steps_markdown": "string",
-     "customer_email_markdown": "string | null"
-   }
-   ```
+```jsonc
+{
+  "status": "ok",
+  "schema_version": "1.0",
+  "analysis_mode": "single|compare",
+  "query_uuid": "string",
+  "comparison_uuid": "string | null",
+  "deployment": "string",
+  "customer_info": {
+    "name": "string | null",
+    "account_id": "string | null",
+    "deployment": "string"
+  },
+  "best_practices_summary": {
+    "grade": "A–F | null",
+    "score": "number | null",
+    "workload_type": "string | null",
+    "errors": 0,
+    "warnings": 0,
+    "passed": 0
+  },
+  "summary_markdown": "string",
+  "analysis": { /* includes bp_findings, sql_findings, coverage, history_context */ },
+  "history_table": [ /* optional: daily stats if include_history_table */ ],
+  "history_chart_markdown": "string | null",
+  "candidate_actions": [ /* allowed actions */ ],
+  "next_steps_markdown": "string",
+  "customer_email_markdown": "string | null"
+}
+```
 
 ## Error & Status Contract
 
@@ -193,14 +198,7 @@ Errors also include:
 Include `schema_version` in both success and error payloads so downstream systems can evolve safely.
 
 8. **User-Facing Formatting**
-   - Present in the Cortex Code chat:
-     - A concise **headline summary**:
-       - e.g., “Query is consistently slow due to missing HT index on &lt;table&gt; and HT bulk-load pattern (Score: 62/100, Grade: C).”
-     - A **“Next Steps for ASE”** section:
-       - Paste the markdown returned from `next_steps_markdown`.
-     - If the user requested a customer email:
-       - Provide a collapsible or clearly labeled **“Customer Email Draft”** section.
-     - Optionally offer a **JSON export** snippet (e.g., path to a file under `.cortex/outputs/`).
+   - This skill returns JSON to the caller. Rendering is handled by the client.
 
 
 ## Tools & Capabilities
@@ -224,35 +222,7 @@ The skill is allowed to use:
 
 ## Output Format
 
-When the user runs this skill successfully, respond with something like:
-
-```markdown
-🔍 **Hybrid Table Query Analysis**
-
-- **UUID:** &lt;UUID&gt;
-- **Deployment:** &lt;deployment&gt;
-- **Grade / Score:** B (78/100)
-- **Workload Type:** OLTP / Mixed / Analytic on HT
-- **Plan Cache:** Reused / First Execution / Not Reused
-
-### 1. Diagnosis (for ASE)
-
-&lt;short, 3–5 bullet summary of root causes pulled from analysis_schema&gt;
-
-### 2. Tactical Next Steps (for ASE)
-
-&lt;next_steps_markdown&gt;
-
-### 3. (Optional) Customer Email Draft
-
-&lt;customer_email_markdown&gt;
-
----
-
-**JSON Analysis Artifact**
-
-Saved to: `.cortex/outputs/hybrid-table-analysis-&lt;UUID&gt;.json`
-```
+The skill emits JSON only; clients can render `summary_markdown` and LLM outputs.
 
 
 ## Example Conversations
