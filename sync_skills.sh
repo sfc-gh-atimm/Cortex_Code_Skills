@@ -57,6 +57,10 @@ case "$cmd" in
       mkdir -p "$REPO_SKILLS_DIR/hybrid-table-query-analyzer/ht_analyzer"
       cp "$SNOWSIGHT_APP_ROOT/snowvi_link.py" "$REPO_SKILLS_DIR/hybrid-table-query-analyzer/ht_analyzer/snowvi_link.py"
     fi
+    if [[ -d "$SNOWSIGHT_APP_ROOT/sql_analysis" ]]; then
+      mkdir -p "$REPO_SKILLS_DIR/hybrid-table-query-analyzer/sql_analysis"
+      rsync -a --delete "$SNOWSIGHT_APP_ROOT/sql_analysis/" "$REPO_SKILLS_DIR/hybrid-table-query-analyzer/sql_analysis/"
+    fi
     echo "Synced app -> repo (hybrid-table-query-analyzer)"
     ;;
   *)

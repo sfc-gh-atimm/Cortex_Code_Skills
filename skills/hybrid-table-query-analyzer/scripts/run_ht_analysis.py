@@ -138,7 +138,21 @@ def _build_history_table_and_chart(history_df) -> Dict[str, Any]:
     return {"history_table": table, "history_chart_markdown": chart}
 
 
-def _build_summary_markdown(customer_info: Dict[str, Any], best_practices: Dict[str, Any]) -> str:
+def _render_markdown_table(headers: list[str], rows: list[list[str]]) -> str:
+    if not rows:
+        return "_None_"
+    header_line = "| " + " | ".join(headers) + " |"
+    divider = "| " + " | ".join(["---"] * len(headers)) + " |"
+    row_lines = ["| " + " | ".join(row) + " |" for row in rows]
+    return "\n".join([header_line, divider, *row_lines])
+
+
+def _build_summary_markdown(
+    customer_info: Dict[str, Any],
+    best_practices: Dict[str, Any],
+    bp_findings: Dict[str, Any],
+    sql_analysis_meta: Optional[Dict[str, Any]] = None,
+) -> str:
     customer_lines = [
         "| Field | Value |",
         "| --- | --- |",
@@ -156,6 +170,39 @@ def _build_summary_markdown(customer_info: Dict[str, Any], best_practices: Dict[
         f"| Warnings | {best_practices.get('warnings', 0)} |",
         f"| Passed | {best_practices.get('passed', 0)} |",
     ]
+    errors = bp_findings.get("errors", []) or []
+    warnings = bp_findings.get("warnings", []) or []
+    passed = bp_findings.get("passed", []) or []
+
+    error_rows = [
+        [
+            str(item.get("rule") or item.get("check") or ""),
+            str(item.get("severity") or ""),
+            str(item.get("finding") or ""),
+        ]
+        for item in errors
+    ]
+    warning_rows = [
+        [
+            str(item.get("rule") or item.get("check") or ""),
+            str(item.get("severity") or ""),
+            str(item.get("finding") or ""),
+        ]
+        for item in warnings
+    ]
+    passed_rows = [
+        [
+            str(item.get("check") or item.get("rule") or ""),
+            str(item.get("finding") or ""),
+        ]
+        for item in passed
+    ]
+
+    sql_note = None
+    if sql_analysis_meta and not sql_analysis_meta.get("sql_analysis_ran", False):
+        skipped_reason = sql_analysis_meta.get("skipped_reason") or "Unknown"
+        sql_note = f"_SQL analysis skipped: {skipped_reason}_"
+
     return "\n".join(
         [
             "### Customer Info",
@@ -163,6 +210,18 @@ def _build_summary_markdown(customer_info: Dict[str, Any], best_practices: Dict[
             "",
             "### Best Practices Summary",
             *bp_lines,
+            "",
+            "### Best Practices Details",
+            "",
+            "#### Errors",
+            _render_markdown_table(["Rule", "Severity", "Finding"], error_rows),
+            "",
+            "#### Warnings",
+            _render_markdown_table(["Rule", "Severity", "Finding"], warning_rows),
+            "",
+            "#### Passed",
+            _render_markdown_table(["Check", "Finding"], passed_rows),
+            *(["", sql_note] if sql_note else []),
         ]
     )
 
@@ -428,6 +487,12 @@ def run_analysis(args: argparse.Namespace) -> Dict[str, Any]:
     #   You can align this exactly with the ANALYSIS_SCHEMA that the Streamlit app uses.
     customer_info = _build_customer_info(meta, deployment)
     best_practices_summary = _build_best_practices_summary(analysis_features.get("bp_findings", {}))
+    summary_markdown = _build_summary_markdown(
+        customer_info,
+        best_practices_summary,
+        analysis_features.get("bp_findings", {}),
+        analysis_features.get("sql_analysis", {}),
+    )
     result: Dict[str, Any] = {
         "status": "ok",
         "schema_version": SCHEMA_VERSION,
@@ -438,7 +503,7 @@ def run_analysis(args: argparse.Namespace) -> Dict[str, Any]:
         "snowvi_link": snowvi_link,
         "customer_info": customer_info,
         "best_practices_summary": best_practices_summary,
-        "summary_markdown": _build_summary_markdown(customer_info, best_practices_summary),
+        "summary_markdown": summary_markdown,
         **history_table_payload,
         "analysis": analysis_features,
         "candidate_actions": candidate_actions,
