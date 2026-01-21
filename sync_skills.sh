@@ -53,6 +53,10 @@ case "$cmd" in
       mkdir -p "$REPO_SKILLS_DIR/hybrid-table-query-analyzer/ht_analyzer"
       cp "$SNOWSIGHT_APP_ROOT/analysis_shared_sql.py" "$REPO_SKILLS_DIR/hybrid-table-query-analyzer/ht_analyzer/analysis_shared_sql.py"
     fi
+    if [[ -f "$SNOWSIGHT_APP_ROOT/snowvi_link.py" ]]; then
+      mkdir -p "$REPO_SKILLS_DIR/hybrid-table-query-analyzer/ht_analyzer"
+      cp "$SNOWSIGHT_APP_ROOT/snowvi_link.py" "$REPO_SKILLS_DIR/hybrid-table-query-analyzer/ht_analyzer/snowvi_link.py"
+    fi
     echo "Synced app -> repo (hybrid-table-query-analyzer)"
     ;;
   *)

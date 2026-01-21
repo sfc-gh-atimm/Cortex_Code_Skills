@@ -80,6 +80,7 @@ The primary inputs are:
   - `snowvi_path`: Local path to a SnowVI JSON export for this query (if available)
   - `comparison_uuid`: A second UUID to compare against (before/after analysis)
   - `include_history_table`: Include query history table + timeline chart in output
+  - `include_snowvi_link`: Include a SnowVI URL for the query in the output
   - `disable_telemetry`: Disable telemetry logging (enabled by default)
   - `symptom`: Optional symptom category (e.g. `latency_spikes`, `timeouts`, `quota_issues`)
   - `symptom_description`: Free-text description of what the customer is seeing
@@ -153,6 +154,7 @@ At a high level, the skill should follow this workflow:
   "query_uuid": "string",
   "comparison_uuid": "string | null",
   "deployment": "string",
+  "snowvi_link": "string | null",
   "customer_info": {
     "name": "string | null",
     "account_id": "string | null",

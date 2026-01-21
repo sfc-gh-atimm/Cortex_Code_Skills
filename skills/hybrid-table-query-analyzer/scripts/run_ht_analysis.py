@@ -181,6 +181,7 @@ try:
         load_snowvi_json,
         extract_snowvi_features,
     )
+    from ht_analyzer.snowvi_link import generate_snowvi_link
     from ht_analyzer.analysis import (
         build_analysis_features,
         build_candidate_actions,
@@ -213,6 +214,9 @@ except ImportError:
 
     def extract_snowvi_features(snowvi_json, meta):
         return {}
+
+    def generate_snowvi_link(session, query_uuid: str, deployment: str):
+        return None
 
     def build_analysis_features(meta, snowvi_features, history_context, comparison_uuid=None):
         return {}
@@ -297,6 +301,12 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         help="If set, include query history table and a simple timeline chart.",
     )
     parser.add_argument(
+        "--include-snowvi-link",
+        dest="include_snowvi_link",
+        action="store_true",
+        help="If set, include a SnowVI link for the query in the JSON output.",
+    )
+    parser.add_argument(
         "--disable-telemetry",
         dest="disable_telemetry",
         action="store_true",
@@ -349,6 +359,14 @@ def run_analysis(args: argparse.Namespace) -> Dict[str, Any]:
         uuid=query_uuid,
         deployment=deployment,
     )
+
+    snowvi_link = None
+    if args.include_snowvi_link:
+        snowvi_link = generate_snowvi_link(
+            session=session,
+            query_uuid=query_uuid,
+            deployment=deployment,
+        )
 
     # 4) Optional SnowVI enrichment
     if snowvi_json:
@@ -417,6 +435,7 @@ def run_analysis(args: argparse.Namespace) -> Dict[str, Any]:
         "query_uuid": query_uuid,
         "comparison_uuid": comparison_uuid,
         "deployment": deployment,
+        "snowvi_link": snowvi_link,
         "customer_info": customer_info,
         "best_practices_summary": best_practices_summary,
         "summary_markdown": _build_summary_markdown(customer_info, best_practices_summary),
