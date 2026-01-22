@@ -3,74 +3,33 @@
 This repo is the source of truth for local Cortex Code skills.
 
 ## Structure
-- `skills/` — skills synced to `~/.snowflake/cortex/skills`
-- `sync_skills.sh` — sync utility
+
+```
+cortex_skills_repo/
+├── skills/
+│   ├── hybrid-table-query-analyzer/   # HT query performance analysis
+│   └── workload-assessment/           # Table type recommendation
+├── sync_skills.sh                     # Sync utility
+└── README.md
+```
 
 ## Skills
 
-### hybrid-table-query-analyzer
-Analyzes Hybrid Table query performance using Snowhouse telemetry and SnowVI JSON exports.
+| Skill | Description | Telemetry App |
+|-------|-------------|---------------|
+| [hybrid-table-query-analyzer](skills/hybrid-table-query-analyzer/README.md) | Analyzes Hybrid Table query performance using Snowhouse + SnowVI | `Hybrid Table Query Analyzer (Skill)` |
+| [workload-assessment](skills/workload-assessment/README.md) | Recommends Standard/Hybrid/Interactive Analytics based on workload | `Workload Assessment (Skill)` |
 
-**Features:**
-- Fetches Snowhouse metadata for a given query UUID
-- Enriches analysis with SnowVI JSON exports (optional)
-- Applies policy-guided best practices analysis
-- Generates ASE-facing diagnosis and next steps via Cortex LLM
-- Interactive mode prompts for inputs when invoked without flags
+## Connections Required
 
-**Usage:**
-```bash
-python scripts/run_ht_analysis.py \
-  --uuid "<query_uuid>" \
-  --snowvi-path "<path_to_snowvi_json>" \
-  --snowhouse-connection "Snowhouse" \
-  --include-snowvi-link \
-  --debug
-```
+Both skills query Snowhouse. Configure in `~/.snowflake/connections.toml`:
 
-**Flags:**
-| Flag | Description |
-|------|-------------|
-| `--uuid` | Query UUID to analyze (required) |
-| `--snowvi-path` | Path to SnowVI JSON export (optional) |
-| `--deployment` | Snowflake deployment (auto-detected from SnowVI) |
-| `--snowhouse-connection` | Snowflake CLI connection name (default: snowhouse) |
-| `--include-snowvi-link` | Include SnowVI URL in output |
-| `--include-history-table` | Include query history table and timeline |
-| `--debug` | Show progress messages, disable telemetry |
+| Connection | Auth Type | Usage |
+|------------|-----------|-------|
+| `Snowhouse_PAT` | Programmatic Access Token | Recommended (non-interactive) |
+| `Snowhouse` | externalbrowser | Fallback (interactive) |
 
-### workload-assessment
-Assesses workload suitability for Standard Tables, Hybrid Tables, or Interactive Analytics using customer session ID via Snowhouse queries.
-
-**Features:**
-- Analyzes query patterns from a customer session ID
-- Calculates read:write ratio from 30-day account history
-- Recommends optimal table type based on workload characteristics
-- Generates markdown assessment reports
-- Logs telemetry to `AFE.PUBLIC_APP_STATE.APP_EVENTS`
-- Uses batched queries with PAT authentication for performance
-
-**Input Parameters:**
-| Parameter | Description |
-|-----------|-------------|
-| Session ID | Customer session ID to analyze |
-| Deployment | Snowflake deployment region (e.g., va3) |
-| Account Locator | Customer account locator (e.g., GCB59607) |
-| Report Path | Where to save the assessment report |
-
-**Decision Criteria:**
-| Read:Write Ratio | Recommendation |
-|------------------|----------------|
-| > 10,000:1 | Interactive Analytics |
-| 1,000:1 - 10,000:1 | Interactive Analytics (if read-only acceptable) |
-| < 100:1 with OLTP pattern | Hybrid Tables |
-| Batch analytical | Standard Tables |
-
-**Connections Required:**
-- `Snowhouse_PAT` (recommended) - PAT authentication for non-interactive use
-- `Snowhouse` (fallback) - externalbrowser authentication
-
-## Common Commands
+## Sync Commands
 
 Deploy repo skills to local Cortex folder:
 ```bash
@@ -81,3 +40,12 @@ Pull current local Cortex skills into repo:
 ```bash
 ./sync_skills.sh pull
 ```
+
+Sync hybrid-table-query-analyzer from Snowsight app source:
+```bash
+./sync_skills.sh sync-from-app
+```
+
+## Telemetry
+
+All skills log events to `AFE.PUBLIC_APP_STATE.APP_EVENTS` for usage tracking.
