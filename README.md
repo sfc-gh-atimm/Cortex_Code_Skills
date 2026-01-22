@@ -2,6 +2,13 @@
 
 This repo is the source of truth for local Cortex Code skills.
 
+## Setup
+
+Symlink this repo's skills folder to Cortex Code:
+```bash
+ln -s /Users/atimm/Documents/Unistore/cortex_skills_repo/skills ~/.snowflake/cortex/skills
+```
+
 ## Structure
 
 ```
@@ -9,7 +16,6 @@ cortex_skills_repo/
 ├── skills/
 │   ├── hybrid-table-query-analyzer/   # HT query performance analysis
 │   └── workload-assessment/           # Table type recommendation
-├── sync_skills.sh                     # Sync utility
 └── README.md
 ```
 
@@ -29,22 +35,11 @@ Both skills query Snowhouse. Configure in `~/.snowflake/connections.toml`:
 | `Snowhouse_PAT` | Programmatic Access Token | Recommended (non-interactive) |
 | `Snowhouse` | externalbrowser | Fallback (interactive) |
 
-## Sync Commands
+## Development Workflow
 
-Deploy repo skills to local Cortex folder:
-```bash
-./sync_skills.sh push
-```
-
-Pull current local Cortex skills into repo:
-```bash
-./sync_skills.sh pull
-```
-
-Sync hybrid-table-query-analyzer from Snowsight app source:
-```bash
-./sync_skills.sh sync-from-app
-```
+1. Edit skills directly in `skills/` folder
+2. Test immediately in Cortex Code (reads from symlinked folder)
+3. Commit changes to git
 
 ## Telemetry
 
