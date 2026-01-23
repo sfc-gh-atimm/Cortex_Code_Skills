@@ -6,14 +6,20 @@ description: "Analyze OLTP discovery templates to recommend Hybrid Tables, Snowf
 # OLTP Discovery Advisor
 
 ## Overview
-This skill analyzes completed (or partially completed) OLTP Discovery Templates to determine the best-fit Snowflake solution for customer workloads. It identifies missing information, evaluates requirements against product capabilities, and generates talking points for AEs.
+This skill analyzes completed (or partially completed) OLTP Discovery Templates to determine the best-fit Snowflake solution for customer workloads. It identifies missing information, evaluates requirements against product capabilities, and generates talking points for AEs. This skill assumes the role of a Senior Applied Field Engineer that guides an AE and SE through discovery questions with the end customer. It should always do the following in its assessment:
+1. Don't make assumptions about the current state of products. Verify with current internal product documentation
+2. Take into account factors not included in discovery template such as"
+2a. Archtictectural complexity of adding/integrating the proposed solution
+2b. The associated overhead of implementing/maintaining the proposed solution
+2c. Ask questions around the customers current ETL process and desire for eliminating it
+2d. Does the customer require a fully GA, supported solution or are they open to a Private Preview or Public Preview option?
 
 ## Products Evaluated
 | Product | Best For |
 |---------|----------|
 | **Hybrid Tables** | True OLTP workloads with sub-10ms point lookups, high single-row DML, transactional consistency |
 | **Snowflake Postgres** | Postgres-native applications, Postgres expertise, complex Postgres features (extensions, stored procs) |
-| **Interactive Tables** | Read-heavy analytical workloads requiring sub-second (not sub-10ms) response times |
+| **Interactive Tables** | Read-heavy analytical workloads requiring sub-second (not sub-10ms) response times|
 | **Standard Tables** | Batch analytics, aggregations, cost-optimized analytical queries |
 
 ---
@@ -34,9 +40,12 @@ Ask the user for the path to the discovery template file:
 ### Step 2: Parse Template and Extract Fields
 Read the template file and extract the following key fields:
 
+
+
 #### Customer Info
 - Customer Name
 - Use Case Name
+- Use Case Link - must have a link in the template, otherwise reject it and ask the AE to create one and link it to the Unistore product
 - Account Executive
 - Sales Engineer
 - Is Customer a Postgres Expert?
@@ -199,12 +208,76 @@ Calculate total score for each product and identify:
 
 ---
 
-### Step 5: Generate Recommendation Report
+### Step 5: Generate Initial Summary (Append to Discovery Template)
 
-Create a markdown report saved alongside the original template with suffix `_recommendation.md`:
+After evaluating the template, **append** the following summary directly to the end of the original discovery template file:
+
+#### 5.1 Quick Recommendation Summary Table
+This is the FIRST output - a concise table showing the top 2 recommended products:
 
 ```markdown
-# OLTP Discovery Recommendation Report
+
+---
+
+# OLTP Discovery Advisor Assessment
+**Assessment Date:** [Date]
+**Assessed By:** OLTP Discovery Advisor Skill
+
+## Quick Recommendation Summary
+
+| Rank | Product | Score | Key Fit Reasons | Primary Concerns |
+|------|---------|-------|-----------------|------------------|
+| 🥇 1st | [PRODUCT] | [X/15] | [2-3 bullet reasons] | [Any caveats] |
+| 🥈 2nd | [PRODUCT] | [X/15] | [2-3 bullet reasons] | [Any caveats] |
+
+**Confidence Level:** [High/Medium/Low] - [Brief explanation based on template completeness]
+
+**Quick Take:** [1-2 sentence recommendation summary explaining why #1 is preferred over #2]
+```
+
+#### 5.2 Clarifying Questions for Customer Follow-up
+Immediately after the summary table, append clarifying questions the AE should take back to the customer:
+
+```markdown
+
+---
+
+## Clarifying Questions for Customer
+
+The following questions will help validate our recommendation and uncover any factors that might change our assessment:
+
+### Critical Questions (Must Ask)
+1. [Question based on missing/unclear critical field]
+2. [Question to validate key assumption in recommendation]
+3. [Question about specific technical requirement]
+
+### Architecture & Integration Questions
+4. What is the current architecture for this workload? (existing database, application stack, deployment environment)
+5. What is your current ETL process and would eliminating/simplifying it be valuable?
+6. How tightly does this need to integrate with your existing Snowflake environment?
+
+### Operational Questions
+7. Who will maintain this system? (Postgres expertise vs Snowflake expertise on the team)
+8. What is your tolerance for operational complexity vs performance optimization?
+9. Are there compliance or data residency requirements we should consider?
+
+### Scale & Growth Questions
+10. What does your 12-month and 24-month growth trajectory look like for this workload?
+11. Do you anticipate needing elastic compute to handle traffic spikes?
+
+### Red Flags to Probe
+- [Specific concern from template that needs clarification]
+- [Potential blocker that needs validation]
+```
+
+---
+
+### Step 6: Generate Full Recommendation Report (Appended)
+
+After the summary and clarifying questions, append the full detailed report to the same discovery template file:
+
+```markdown
+## Full Recommendation Report
 
 **Customer:** [Customer Name]
 **Use Case:** [Use Case Name]
@@ -369,40 +442,37 @@ Ask these questions to confirm the recommendation:
 
 ---
 
-## Step 6: Save Report
+## Step 7: Save All Output (Append to Original Template)
 
-Save the recommendation report in the **customer folder** that contains the discovery template being analyzed. Determine the customer folder by looking at the parent directory structure - typically the discovery template will be inside a customer-named folder.
+**IMPORTANT:** All output (summary table, clarifying questions, and full report) should be **appended** to the end of the original discovery template file, NOT saved as a separate file.
 
 ```python
 import os
 
-# Get the directory containing the discovery template
-template_dir = os.path.dirname(input_template_path)
+# Read the original template
+with open(input_template_path, 'r') as f:
+    original_content = f.read()
 
-# Look for a customer folder (sibling or parent directory with customer name)
-# The customer folder is typically named after the customer/use case
-# Example structure:
-#   /path/to/discovery_template/test/  <- test templates folder
-#   /path/to/discovery_template/test/dtcc LedgerScan/  <- customer folder for output
-#   /path/to/discovery_template/test/02_postgres_fit.md  <- input template
+# Append all assessment output to the original template
+full_output = original_content + "\n\n" + summary_table + "\n\n" + clarifying_questions + "\n\n" + full_report
 
-# Extract customer name from the template to find/create the customer folder
-customer_name = extract_customer_name_from_template(input_template_path)  # e.g., "dtcc LedgerScan"
+# Write back to the SAME file
+with open(input_template_path, 'w') as f:
+    f.write(full_output)
 
-# Output path should be in the customer folder
-customer_folder = os.path.join(template_dir, customer_name)
-output_filename = os.path.basename(input_template_path).replace('.md', '_recommendation.md')
-output_path = os.path.join(customer_folder, output_filename)
-
-# Create customer folder if it doesn't exist
-os.makedirs(customer_folder, exist_ok=True)
-
-# If input was: /path/to/discovery_template/test/02_postgres_fit.md
-# And customer name is: "dtcc LedgerScan"
-# Output will be: /path/to/discovery_template/test/dtcc LedgerScan/02_postgres_fit_recommendation.md
+# Example: If input was /path/to/discovery_template.md
+# Output is written to the SAME file: /path/to/discovery_template.md
 ```
 
-**Important:** Always ask the user to confirm the output location before saving, especially if the customer folder doesn't exist yet.
+**Output Structure (appended to original template):**
+1. `---` separator
+2. Quick Recommendation Summary (table with top 2 products)
+3. `---` separator  
+4. Clarifying Questions for Customer
+5. `---` separator
+6. Full Recommendation Report
+
+**Note:** The original discovery template content is preserved - assessment output is appended to the end.
 
 ---
 

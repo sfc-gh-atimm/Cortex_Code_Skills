@@ -6,11 +6,17 @@ import numpy as np
 from snowflake.snowpark import Session
 
 
-def create_snowhouse_session(connection_name: str = "snowhouse") -> Session:
+def create_snowhouse_session(connection_name: str | None = None) -> Session:
     """
     Create a Snowpark session using a named Snowflake CLI connection.
+    
+    If connection_name is not provided, uses SNOWFLAKE_CONNECTION_NAME env var,
+    falling back to the default connection.
     """
-    return Session.builder.configs({"connection_name": connection_name}).create()
+    import os
+    effective_name = connection_name or os.getenv("SNOWFLAKE_CONNECTION_NAME")
+    config = {"connection_name": effective_name} if effective_name else {}
+    return Session.builder.configs(config).create()
 
 
 def resolve_deployment_for_uuid(session: Session, uuid: str) -> str:

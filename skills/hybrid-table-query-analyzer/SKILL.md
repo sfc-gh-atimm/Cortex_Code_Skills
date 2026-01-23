@@ -144,10 +144,13 @@ python scripts/run_ht_analysis.py \
   --uuid "<query_uuid>" \
   --snowvi-path "<path_if_provided>" \
   --deployment "<deployment_if_provided>" \
-  --snowhouse-connection "Snowhouse" \
   --include-snowvi-link \
   --debug
 ```
+
+Note: The script uses the current/default Snowflake connection. To use a specific connection, either:
+- Set `SNOWFLAKE_CONNECTION_NAME` environment variable, or
+- Pass `--snowhouse-connection <connection_name>`
 
 
 ## Role

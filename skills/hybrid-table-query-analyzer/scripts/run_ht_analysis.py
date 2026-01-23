@@ -437,8 +437,8 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--snowhouse-connection",
         dest="snowhouse_connection",
-        default="snowhouse",
-        help="Snowflake CLI connection name for Snowhouse (default: snowhouse).",
+        default=None,
+        help="Snowflake CLI connection name for Snowhouse (default: uses SNOWFLAKE_CONNECTION_NAME env var or default connection).",
     )
     parser.add_argument(
         "--include-history-table",
