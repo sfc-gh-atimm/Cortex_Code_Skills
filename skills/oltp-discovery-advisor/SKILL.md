@@ -26,13 +26,122 @@ This skill analyzes completed (or partially completed) OLTP Discovery Templates 
 
 ## Workflow
 
-### Step 1: Collect Discovery Template
-Ask the user for the path to the discovery template file:
+### Step 0: Determine User Intent
+First, determine if the user wants to:
+1. **Generate a blank questionnaire** for AE/SE to complete with customer
+2. **Analyze a completed questionnaire** to get a recommendation
+
+Use ask_user_question:
+```json
+{
+  "questions": [
+    {"header": "Action", "question": "What would you like to do?", "type": "options", "multiSelect": false, "options": [
+      {"label": "Generate blank questionnaire", "description": "Create a new discovery questionnaire for an AE/SE to complete with a customer"},
+      {"label": "Analyze completed questionnaire", "description": "Review a completed questionnaire and provide product recommendations"}
+    ]}
+  ]
+}
+```
+
+---
+
+### Step 0a: Generate Blank Discovery Template (if selected)
+
+If user wants to generate a blank template, collect basic info:
 
 ```json
 {
   "questions": [
-    {"header": "Template", "question": "Enter the path to the OLTP Discovery Template file", "type": "text", "defaultValue": "/path/to/discovery_template.md"}
+    {"header": "Customer", "question": "Customer name", "type": "text", "defaultValue": "Customer Name"},
+    {"header": "Output Path", "question": "Where should the template be saved?", "type": "text", "defaultValue": "/path/to/customer/folder/"}
+  ]
+}
+```
+
+Then generate the template using the standard OLTP Discovery Template v2 format:
+
+```markdown
+# OLTP Discovery Template
+
+| Customer Name | [CUSTOMER_NAME] |  |  |
+| :---- | ----- | :---- | ----- |
+| **Use Case Name** |  |  |  |
+| **Use Case Link (in SFDC)** |  | \<link\> |  |
+| **Opportunity Link (in SFDC)** |  | \<link\> |  |
+| **Date** |  |  |  |
+| **Account Executive**  |  |  |  |
+| **Sales Engineer** |  |  |  |
+| **Other Snowflake contributors (e.g. from AFE, APG, Professional Services)** |  |  |  |
+| **Customer points of contact** |  |  |  |
+| **Snowflake Account Names in Scope** |  |  |  |
+| **What Snowflake Features are being considered?** |  | \<Postgres, Unistore, Interactive, Dynamic Tables, etc.\> |  |
+| **Is the Customer a Postgres Expert?** |  |  |  |
+| **Is workload migrating from Postgres?** |  |  |  |
+
+# Opportunity Overview
+
+## Use Case Summary
+
+Place a short summary here. Full documentation should be at the SFDC Use Case link.
+
+## Business Goal
+
+1-2 sentences regarding the business goal or desired outcome.
+
+## Solution-space
+
+**Current Solution:** Currently using \<articulate current scenario\>
+
+**Possible alternative solutions:** \<articulate what other options customer has\>
+
+# Use Case Requirements & Technical details:
+
+### Architecture diagram & description
+
+Please provide if available.
+
+### Overall Technical Requirements
+
+Answers to these questions will assist the specialist team in recommending solution options:
+
+| Data Volume / Size | \<data size on disk\> |
+| :---- | :---- |
+| **Row size range** | \<row counts for largest tables\> |
+| **AVG operations per second** | \<system expected TPS\> |
+| **PEAK operations per second** | \<system expected TPS\> |
+| **P50 Latency Expectation** | \<i.e. 1-10ms, 10-50ms, \<100ms\> |
+| **P99 Latency Expectation** | \<i.e. 1-10ms, 10-50ms, \<100ms\> |
+| **Bulk Writes & Updates** | Hourly bulk updates, periodic row updates |
+| **Are Primary Keys well defined?** |  |
+| **Total Direct Cost** | ? |
+| **Application Client** | \<JDBC/NodeJS, etc.\> |
+| **Are there custom data types?** | \<details\> |
+| **Is Elastic Compute important?** |  |
+| **What ETL Tooling is in place?** | \<describe how data moves from OLTP to Snowflake today\> |
+| **NOTES** | \<provide additional information you feel is helpful\> |
+
+*Add additional requirements as needed*
+
+### Workload Details
+
+If some of the workload details are known, please place them here
+
+| Query Name | SQL | Latency (current / expected) | Expected Throughput |
+| :---- | :---- | :---- | :---- |
+| *Example Query* |  |  |  |
+```
+
+After generating, inform the user of the file path and that the AE/SE should complete it with the customer and return it for analysis.
+
+---
+
+### Step 1: Collect Discovery Template (for analysis)
+Ask the user for the path to the completed discovery template file:
+
+```json
+{
+  "questions": [
+    {"header": "Template", "question": "Enter the path to the completed OLTP Discovery Template file", "type": "text", "defaultValue": "/path/to/discovery_template.md"}
   ]
 }
 ```
@@ -235,8 +344,158 @@ This is the FIRST output - a concise table showing the top 2 recommended product
 **Quick Take:** [1-2 sentence recommendation summary explaining why #1 is preferred over #2]
 ```
 
-#### 5.2 Clarifying Questions for Customer Follow-up
-Immediately after the summary table, append clarifying questions the AE should take back to the customer:
+#### 5.2 Follow-up Questionnaire for Customer
+After the summary table, generate a **targeted follow-up questionnaire** based on gaps identified in the initial template. Use business-friendly language (not technical jargon like P50/P99). Select relevant sections from this master questionnaire based on what's missing or unclear:
+
+```markdown
+
+---
+
+## Follow-up Questions for Customer
+
+Based on our initial analysis, we need additional information in the following areas:
+
+### Response Time Requirements (if latency unclear)
+
+**How fast do your applications need query responses?**
+
+| Speed | Examples | Select |
+|-------|----------|--------|
+| Instant (< 10ms) | User login, account lookup, real-time pricing | [ ] |
+| Very Fast (10-100ms) | Cart updates, inventory checks | [ ] |
+| Fast (100ms - 1 sec) | Dashboard filters, search results | [ ] |
+| Flexible (> 1 sec OK) | Reports, batch operations | [ ] |
+
+**Are there contractual SLAs tied to response times?** [ ] Yes: _____________ [ ] No
+
+### Transaction Volume (if TPS unclear)
+
+**Average database operations per second:** [ ] < 100 [ ] 100-1,000 [ ] 1,000-10,000 [ ] > 10,000
+
+**Peak traffic multiplier:** _____ x average | **Concurrent users (peak):** _____
+
+### Read vs Write Patterns (if workload pattern unclear)
+
+**What percentage of operations are reads (SELECT)?**
+[ ] 90%+ reads | [ ] 70-90% reads | [ ] 50-70% reads | [ ] < 50% reads
+
+**Most common read operations:** (check all that apply)
+[ ] Single-record lookups (get by ID) | [ ] Range queries | [ ] Aggregations/reports | [ ] Complex joins
+
+**Most common write operations:** (check all that apply)
+[ ] Single-row inserts/updates | [ ] Bulk/batch loads | [ ] Merge/upsert | [ ] Deletes
+
+**How frequent are UPDATEs and DELETEs?**
+[ ] Very frequent (core logic) | [ ] Occasional | [ ] Rare (mostly append-only)
+
+### Data Movement & ETL (always include - key differentiator)
+
+**Do you currently have ETL pipelines moving data between OLTP and analytics systems?**
+[ ] Yes - extensive ETL | [ ] Yes - some pipelines | [ ] Minimal | [ ] No ETL currently
+
+**If yes, describe the current ETL landscape:**
+
+| Question | Answer |
+|----------|--------|
+| Number of ETL jobs/pipelines | _____ |
+| ETL tools used (Informatica, SSIS, custom, etc.) | _____________________ |
+| How often do ETL jobs run? | [ ] Real-time [ ] Hourly [ ] Daily [ ] Weekly |
+| ETL maintenance effort (hours/week) | _____ |
+
+**Pain points with current ETL:** (check all that apply)
+[ ] Data latency (analytics lag behind operational data)
+[ ] Job failures requiring manual intervention
+[ ] Complexity managing multiple pipelines
+[ ] Data inconsistencies between systems
+[ ] High infrastructure/licensing costs
+[ ] Difficult to modify when source systems change
+
+**Would eliminating ETL between OLTP and analytics be valuable?**
+[ ] Very valuable - major pain point | [ ] Somewhat valuable | [ ] Not a priority
+
+**Do downstream systems (BI tools, reports, ML) need direct access to operational data?**
+[ ] Yes - currently blocked by ETL delays | [ ] Yes - but current delays acceptable | [ ] No
+
+### Architecture & Security Simplification (always include - key differentiator)
+
+**How many separate database platforms does your organization currently manage?**
+[ ] 1-2 | [ ] 3-5 | [ ] 6-10 | [ ] 10+
+
+List platforms: _________________________________________________________________
+
+**Current state pain points:** (check all that apply)
+[ ] Multiple database technologies requiring different skill sets
+[ ] Inconsistent security policies across platforms
+[ ] Separate access control systems to manage
+[ ] Different backup/DR procedures per platform
+[ ] Compliance auditing across multiple systems is complex
+[ ] Difficult to get unified view of data across platforms
+
+**How important is consolidating to fewer platforms?**
+[ ] Critical - strategic initiative | [ ] Important | [ ] Nice to have | [ ] Not a priority
+
+**Security & Governance considerations:**
+
+| Question | Answer |
+|----------|--------|
+| Do you need unified role-based access control (RBAC) across OLTP and analytics? | [ ] Yes [ ] No |
+| Is row-level or column-level security required? | [ ] Yes [ ] No |
+| Do you need consistent audit logging across all data access? | [ ] Yes [ ] No |
+| Are there data masking requirements for sensitive data? | [ ] Yes [ ] No |
+| Must data stay within specific geographic regions? | [ ] Yes: _________ [ ] No |
+
+**Would a single platform for OLTP + analytics simplify your compliance posture?**
+[ ] Yes - significantly | [ ] Somewhat | [ ] No impact
+
+**Current challenges with security/governance:** (check all that apply)
+[ ] Different authentication mechanisms per platform
+[ ] Inconsistent data classification across systems
+[ ] Difficult to track data lineage end-to-end
+[ ] Multiple tools needed for access reviews/audits
+[ ] Shadow IT / ungoverned data copies
+
+### Technology & Compatibility (if application details unclear)
+
+**Does your team have Postgres expertise?** [ ] Yes - strong | [ ] Some | [ ] No
+
+**Database features required:** (check all that apply)
+[ ] Stored procedures (count: _____) | [ ] Triggers | [ ] ACID transactions | [ ] Geospatial data | [ ] Foreign keys
+
+**Can application code be modified?** [ ] Yes - flexible | [ ] Limited changes only | [ ] No - need drop-in replacement
+
+### Scalability & Analytics (if mixed workload unclear)
+
+**How important is automatic scaling during peaks?**
+[ ] Critical - must auto-scale | [ ] Prefer it | [ ] Can provision for peak | [ ] Not needed
+
+**Will the same data serve both transactions AND analytics?** [ ] Yes | [ ] No
+
+**How fresh does analytical data need to be?**
+[ ] Real-time | [ ] Minutes | [ ] Hourly | [ ] Daily OK
+
+### Migration Priority (rank 1-5, 1=highest)
+
+[ ] Cost savings
+[ ] Compliance/security
+[ ] Hardware EOL
+[ ] Performance improvement
+[ ] Operational simplification
+[ ] ETL elimination / real-time analytics
+[ ] Platform consolidation
+
+**Migration timeline:** Phase 1: _____________ | Full: _____________
+```
+
+**IMPORTANT:** When generating the follow-up questionnaire:
+1. **Always include** the "Data Movement & ETL" and "Architecture & Security Simplification" sections - these are key differentiators for Snowflake
+2. **Conditionally include** other sections based on gaps in the initial template
+3. Remove sections where the initial template already has clear answers
+4. Use business-friendly language throughout (avoid P50, P99, TPS jargon)
+
+---
+
+#### 5.3 Additional Clarifying Questions
+After the questionnaire sections, append specific clarifying questions based on the analysis:
 
 ```markdown
 
@@ -561,8 +820,88 @@ with open(input_template_path, 'w') as f:
 | App Name | `OLTP Discovery Advisor (Skill)` |
 | App Version | `1.0.0` |
 
-### Log Assessment Event
-After generating the recommendation report:
+### Using the Telemetry Module
+The skill includes a Python telemetry module at `telemetry_cli.py`. Use this for consistent event logging:
+
+```python
+import os
+import snowflake.connector
+from snowflake.snowpark import Session
+
+# Connect to Snowhouse for telemetry logging
+conn = snowflake.connector.connect(connection_name=os.getenv("SNOWFLAKE_CONNECTION_NAME") or "Snowhouse_PAT")
+session = Session.builder.configs({"connection": conn}).create()
+
+# Import the telemetry module
+from telemetry_cli import (
+    track_discovery_assessment,
+    track_template_parse,
+    track_report_generated,
+    log_error,
+    TelemetryEvents
+)
+
+# Track template parsing
+track_template_parse(
+    session=session,
+    customer_name="Acme Corp",
+    template_path="/path/to/discovery_template.md",
+    fields_found=12,
+    fields_missing=3,
+    duration_ms=150
+)
+
+# Track the full discovery assessment
+track_discovery_assessment(
+    session=session,
+    customer_name="Acme Corp",
+    use_case="Real-time inventory lookup",
+    recommendation="Hybrid Tables",
+    alternative="Snowflake Postgres",
+    confidence="High",
+    template_completeness="COMPLETE",
+    missing_fields=[],
+    scores={"hybrid_tables": 13, "postgres": 10, "interactive": 6, "standard": 3},
+    duration_ms=2500
+)
+
+# Track report generation
+track_report_generated(
+    session=session,
+    customer_name="Acme Corp",
+    recommendation="Hybrid Tables",
+    output_path="/path/to/discovery_template.md",
+    duration_ms=500
+)
+
+# Track errors
+try:
+    # ... assessment logic ...
+    pass
+except Exception as e:
+    log_error(
+        session=session,
+        action_type=TelemetryEvents.ERROR_ASSESSMENT,
+        error=e,
+        context={"customer_name": "Acme Corp", "step": "scoring"},
+        salesforce_account_name="Acme Corp"
+    )
+```
+
+### Telemetry Events
+| Event | Description |
+|-------|-------------|
+| `APP_LAUNCH` | Skill invoked |
+| `RUN_DISCOVERY_ASSESSMENT` | Full assessment completed |
+| `TEMPLATE_PARSED` | Discovery template parsed and validated |
+| `REPORT_GENERATED` | Recommendation report appended to template |
+| `CLARIFYING_QUESTIONS_GENERATED` | Questions for customer generated |
+| `ERROR_PARSE` | Error parsing template |
+| `ERROR_ASSESSMENT` | Error during assessment |
+| `ERROR_REPORT` | Error generating report |
+
+### Legacy SQL-Based Logging (Alternative)
+For simple logging without the Python module:
 
 ```bash
 snow sql -c Snowhouse_PAT -q "
