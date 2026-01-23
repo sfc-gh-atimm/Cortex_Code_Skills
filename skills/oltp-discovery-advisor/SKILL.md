@@ -371,13 +371,38 @@ Ask these questions to confirm the recommendation:
 
 ## Step 6: Save Report
 
-Save the recommendation report in the same folder as the input template:
+Save the recommendation report in the **customer folder** that contains the discovery template being analyzed. Determine the customer folder by looking at the parent directory structure - typically the discovery template will be inside a customer-named folder.
 
 ```python
-output_path = input_template_path.replace('.md', '_recommendation.md')
-# If input was: /path/to/discovery_template.md
-# Output will be: /path/to/discovery_template_recommendation.md
+import os
+
+# Get the directory containing the discovery template
+template_dir = os.path.dirname(input_template_path)
+
+# Look for a customer folder (sibling or parent directory with customer name)
+# The customer folder is typically named after the customer/use case
+# Example structure:
+#   /path/to/discovery_template/test/  <- test templates folder
+#   /path/to/discovery_template/test/dtcc LedgerScan/  <- customer folder for output
+#   /path/to/discovery_template/test/02_postgres_fit.md  <- input template
+
+# Extract customer name from the template to find/create the customer folder
+customer_name = extract_customer_name_from_template(input_template_path)  # e.g., "dtcc LedgerScan"
+
+# Output path should be in the customer folder
+customer_folder = os.path.join(template_dir, customer_name)
+output_filename = os.path.basename(input_template_path).replace('.md', '_recommendation.md')
+output_path = os.path.join(customer_folder, output_filename)
+
+# Create customer folder if it doesn't exist
+os.makedirs(customer_folder, exist_ok=True)
+
+# If input was: /path/to/discovery_template/test/02_postgres_fit.md
+# And customer name is: "dtcc LedgerScan"
+# Output will be: /path/to/discovery_template/test/dtcc LedgerScan/02_postgres_fit_recommendation.md
 ```
+
+**Important:** Always ask the user to confirm the output location before saving, especially if the customer folder doesn't exist yet.
 
 ---
 
