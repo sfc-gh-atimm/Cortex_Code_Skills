@@ -233,10 +233,18 @@ At a high level, the skill should follow this workflow:
      - `history_context` / anomaly classification
      - `candidate_actions`: a list of **allowed** concrete recommendations with:
        - `id`, `kind`, `ddl_sql`, `estimated_impact`, `risk_level`
+     - **Root cause pre-classification** using `classify_single_query()` and `classify_run_pair()`
+     - **Field Manual context** loaded based on detected findings
+     - **Reasoning hints** for cross-finding causal chain analysis
+     - **Finding FAQs** for objection handling
    - Implementation modules:
      - `ht_analyzer/analysis.py` (orchestration)
      - `ht_analyzer/analysis_shared.py` (best-practice logic)
      - `ht_analyzer/analysis_shared_sql.py` (SQL analysis + coverage + plan hints)
+     - `ht_analyzer/snowvi_features.py` (SnowVI feature extraction + root cause classification)
+     - `ht_analyzer/reasoning_hints.py` (domain interaction rules)
+     - `ht_analyzer/field_manual_loader.py` (smart field manual content loading)
+     - `ht_analyzer/finding_faqs.py` (FAQ library for objection handling)
 
 6. **AI-Based Explanation (LLM)**
    - Calls Snowflake Cortex via `ht_analyzer.llm` to generate:
@@ -272,7 +280,27 @@ At a high level, the skill should follow this workflow:
   "history_table": [ /* optional: daily stats if include_history_table */ ],
   "history_chart_markdown": "string | null",
   "candidate_actions": [ /* allowed actions */ ],
-  "next_steps_markdown": "string"
+  "next_steps_markdown": "string",
+  
+  // New in v1.1: Enhanced analysis features
+  "root_cause_classification": {
+    "label": "OLTP_OPTIMAL | OLTP_SLOW | HYBRID_ANALYTIC | MISSING_INDEX | FDB_BOTTLENECK | ...",
+    "description": "Human-readable description of the classification"
+  },
+  "comparison_result": {
+    // Only present when analysis_mode="compare"
+    "primary_cause": "DATA_VOLUME | FDB_LATENCY | XP_EXECUTION_ENVIRONMENT | ...",
+    "primary_cause_description": "Human-readable explanation",
+    "secondary_cause": "string | null",
+    "diff": { /* metric deltas */ },
+    "diff_summary": "Formatted summary of metric differences"
+  },
+  "faqs": {
+    // FAQs keyed by finding rule name for objection handling
+    "NO_INDEX_FOR_HOT_PREDICATES": [{"question": "...", "answer": "..."}],
+    // ...
+  },
+  "prioritized_findings": ["NO_BOUND_VARIABLES", "ANALYTIC_WORKLOAD_ON_HT", ...]
 }
 ```
 

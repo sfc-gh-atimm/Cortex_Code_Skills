@@ -20,7 +20,7 @@ import os
 import re
 import sys
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 APP_ROOT = Path(__file__).resolve().parents[3]
 SKILL_ROOT = Path(__file__).resolve().parents[1]
@@ -232,6 +232,68 @@ def _build_history_table_and_chart(history_df) -> Dict[str, Any]:
     return {"history_table": table, "history_chart_markdown": chart}
 
 
+def _generate_deterministic_next_steps(
+    analysis_features: Dict[str, Any],
+    candidate_actions: List[Dict[str, Any]],
+) -> str:
+    """
+    Generate next steps without LLM call (quick mode).
+    Returns a deterministic summary based on findings and candidate actions.
+    """
+    lines = []
+    bp_findings = analysis_features.get("bp_findings", {})
+    sql_findings = analysis_features.get("sql_findings", [])
+    history_ctx = analysis_features.get("history_context", {})
+    
+    grade = bp_findings.get("grade", "N/A")
+    errors = bp_findings.get("errors", [])
+    warnings = bp_findings.get("warnings", [])
+    diagnosis_framing = history_ctx.get("diagnosis_framing", "UNKNOWN")
+    
+    if diagnosis_framing == "ANOMALY":
+        lines.append("**Diagnosis:** This query execution is an anomaly compared to historical runs.")
+    elif diagnosis_framing == "ALWAYS_SLOW":
+        lines.append("**Diagnosis:** This query is consistently slow (not an anomaly).")
+    elif errors:
+        lines.append(f"**Diagnosis:** Query has {len(errors)} error(s) requiring attention.")
+    elif warnings:
+        lines.append(f"**Diagnosis:** Query has {len(warnings)} warning(s) to review.")
+    else:
+        lines.append(f"**Diagnosis:** Query received grade {grade}.")
+    
+    lines.append("")
+    lines.append("**Recommended Actions:**")
+    
+    if not candidate_actions:
+        lines.append("- No specific actions identified. Review best practices findings above.")
+    else:
+        for i, action in enumerate(candidate_actions[:7], 1):
+            action_id = action.get("id", "UNKNOWN")
+            kind = action.get("kind", "")
+            impact = action.get("estimated_impact", "")
+            risk = action.get("risk_level", "")
+            
+            line = f"{i}. `{action_id}` ({kind})"
+            if impact:
+                line += f" - {impact}"
+            if risk:
+                line += f" [Risk: {risk}]"
+            lines.append(line)
+    
+    if errors:
+        lines.append("")
+        lines.append("**Errors to Address:**")
+        for err in errors[:5]:
+            rule = err.get("rule") or err.get("check", "")
+            finding = err.get("finding", "")
+            lines.append(f"- **{rule}**: {finding[:100]}...")
+    
+    lines.append("")
+    lines.append("_Generated in quick mode (no LLM). Use without --quick for AI-powered analysis._")
+    
+    return "\n".join(lines)
+
+
 def _render_markdown_table(headers: list[str], rows: list[list[str]]) -> str:
     if not rows:
         return "_None_"
@@ -327,6 +389,7 @@ try:
         create_snowhouse_session,
         resolve_deployment_for_uuid,
         fetch_query_metadata,
+        fetch_deployment_and_metadata,
         fetch_history_context,
         get_query_history_for_hash,
     )
@@ -457,6 +520,11 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         action="store_true",
         help="Print progress messages to stderr and disable telemetry.",
     )
+    parser.add_argument(
+        "--quick",
+        action="store_true",
+        help="Skip LLM call; return deterministic analysis only (faster).",
+    )
 
     return parser.parse_args(argv)
 
@@ -495,37 +563,57 @@ def run_analysis(args: argparse.Namespace) -> Dict[str, Any]:
     if args.mode == "single" and comparison_uuid:
         raise SkillError("--comparison-uuid requires --mode compare", code="INVALID_COMPARISON_MODE")
 
-    # 1) Create Snowhouse session
-    log("Creating Snowhouse session...")
-    session = create_snowhouse_session(connection_name=args.snowhouse_connection)
-    set_llm_session(session)  # Wire up LLM module to use this session
-    log("Session created")
-
-    # 2) Resolve deployment - prefer SnowVI extraction (fast) over Snowhouse lookup (slow)
-    deployment = args.deployment
-    if not deployment and snowvi_json:
-        deployment = _extract_deployment_from_snowvi(snowvi_json)
-        if deployment:
-            log(f"Deployment from SnowVI: {deployment}")
-    if not deployment:
-        log("Resolving deployment from Snowhouse (slow)...")
-        deployment = resolve_deployment_for_uuid(
-            session=session,
-            uuid=query_uuid,
-        )
-        log(f"Deployment: {deployment}")
-
-    # 3) Fetch query metadata - prefer SnowVI (instant) with Snowhouse fallback/enrichment
-    meta = {}
+    # Determine if we can skip Snowhouse entirely (SnowVI-only fast path)
+    quick_mode = getattr(args, 'quick', False)
+    snowvi_only_mode = bool(snowvi_json) and not args.include_history_table
+    
+    # Extract SnowVI metadata first (instant, no network)
     snowvi_meta = {}
+    deployment = args.deployment
     if snowvi_json:
         log("Extracting metadata from SnowVI...")
         snowvi_meta = _extract_metadata_from_snowvi(snowvi_json)
         log(f"SnowVI metadata: {len(snowvi_meta)} fields")
+        if not deployment:
+            deployment = _extract_deployment_from_snowvi(snowvi_json)
+            if deployment:
+                log(f"Deployment from SnowVI: {deployment}")
     
-    # Fetch from Snowhouse to get fields not in SnowVI (like ACCOUNT_ID, detailed stats)
-    # or if no SnowVI was provided
-    if not snowvi_meta or args.include_history_table:
+    # Determine if we need Snowhouse session
+    needs_snowhouse = (
+        not snowvi_only_mode or  # No SnowVI or history requested
+        not deployment or  # Need deployment lookup
+        not quick_mode or  # LLM needs session
+        args.include_snowvi_link  # SnowVI link generation may need session
+    )
+    
+    session = None
+    if needs_snowhouse:
+        log("Creating Snowhouse session...")
+        session = create_snowhouse_session(connection_name=args.snowhouse_connection)
+        if not quick_mode:
+            set_llm_session(session)
+        log("Session created")
+    else:
+        log("SnowVI-only fast path: skipping Snowhouse session")
+
+    # Fetch deployment + metadata - use combined query when possible for efficiency
+    meta = {}
+    if snowvi_only_mode and snowvi_meta and deployment:
+        meta = snowvi_meta
+        meta["DEPLOYMENT"] = deployment
+        log(f"Using SnowVI-only metadata: {len(meta)} fields")
+    elif session and not deployment:
+        # No deployment yet - use combined query (one round-trip instead of two)
+        log("Fetching deployment + metadata in single query...")
+        deployment, snowhouse_meta = fetch_deployment_and_metadata(
+            session=session,
+            uuid=query_uuid,
+        )
+        log(f"Deployment: {deployment}, metadata: {len(snowhouse_meta)} fields")
+        meta = _merge_metadata(snowvi_meta, snowhouse_meta)
+    elif session:
+        # Have deployment already - just fetch metadata
         log("Fetching query metadata from Snowhouse...")
         snowhouse_meta = fetch_query_metadata(
             session=session,
@@ -533,35 +621,39 @@ def run_analysis(args: argparse.Namespace) -> Dict[str, Any]:
             deployment=deployment,
         )
         log(f"Snowhouse metadata: {len(snowhouse_meta)} fields")
-        # Merge: SnowVI values take precedence, Snowhouse fills gaps
         meta = _merge_metadata(snowvi_meta, snowhouse_meta)
-    else:
+    elif deployment:
         meta = snowvi_meta
-        # Ensure deployment is set
         meta["DEPLOYMENT"] = deployment
+    else:
+        raise SkillError("Deployment required but SnowVI JSON doesn't contain it", code="MISSING_DEPLOYMENT")
     
     log(f"Final metadata: {len(meta)} fields")
 
     snowvi_link = None
-    if args.include_snowvi_link:
+    if args.include_snowvi_link and session:
         snowvi_link = generate_snowvi_link(
             session=session,
             query_uuid=query_uuid,
             deployment=deployment,
         )
 
-    # 4) Optional SnowVI enrichment
+    # Extract SnowVI features (instant, no network)
     if snowvi_json:
         log("Extracting SnowVI features...")
         snowvi_features = extract_snowvi_features(snowvi_json)
         log(f"SnowVI features extracted, {len(snowvi_features)} fields")
 
-    # 5) History / anomaly context (e.g., parameterized hash behavior)
-    log("Fetching history context...")
-    history_ctx = fetch_history_context(session=session, meta=meta)
-    log("History context fetched")
+    # History / anomaly context (requires Snowhouse)
+    history_ctx = {}
+    if session and not snowvi_only_mode:
+        log("Fetching history context...")
+        history_ctx = fetch_history_context(session=session, meta=meta)
+        log("History context fetched")
+    else:
+        log("Skipping history context (SnowVI-only mode)")
     history_table_payload = {"history_table": [], "history_chart_markdown": None}
-    if args.include_history_table:
+    if args.include_history_table and session:
         history_df, history_error = get_query_history_for_hash(
             session=session,
             metadata=meta,
@@ -602,12 +694,19 @@ def run_analysis(args: argparse.Namespace) -> Dict[str, Any]:
     log(f"Candidate actions: {len(candidate_actions)}")
 
     # 8) AI-based explanation / next steps using Cortex (via ht_analyzer.llm)
-    log("Calling Cortex LLM for ASE next steps...")
-    next_steps_markdown = generate_next_steps_for_ase(
-        analysis_features,
-        candidate_actions=candidate_actions,
-    )
-    log("ASE next steps generated")
+    quick_mode = getattr(args, 'quick', False)
+    if quick_mode:
+        log("Quick mode: skipping LLM call")
+        next_steps_markdown = _generate_deterministic_next_steps(
+            analysis_features, candidate_actions
+        )
+    else:
+        log("Calling Cortex LLM for ASE next steps...")
+        next_steps_markdown = generate_next_steps_for_ase(
+            analysis_features,
+            candidate_actions=candidate_actions,
+        )
+        log("ASE next steps generated")
 
     # 9) Assemble JSON payload
     log("Assembling final JSON payload...")
@@ -637,9 +736,12 @@ def run_analysis(args: argparse.Namespace) -> Dict[str, Any]:
         "candidate_actions": candidate_actions,
         "next_steps_markdown": next_steps_markdown,
         "history_context": history_ctx,
-        # Optional convenience fields if present in analysis_features:
         "grade": analysis_features.get("grade"),
         "score": analysis_features.get("score"),
+        "root_cause_classification": analysis_features.get("root_cause_classification"),
+        "comparison_result": analysis_features.get("comparison_result"),
+        "faqs": analysis_features.get("faqs"),
+        "prioritized_findings": analysis_features.get("prioritized_findings"),
     }
 
     if not debug:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, List, Optional
 
 import numpy as np
@@ -103,6 +104,67 @@ def detect_hybrid_bulk_load_pattern(metadata: Dict[str, Any]) -> Optional[Dict[s
             "Prefer CTAS into an empty Hybrid Table for backfills, or chunk MERGE/INSERT workloads "
             "by time/key ranges to reduce KV pressure."
         ),
+    }
+
+
+def detect_slow_oltp_pattern(metadata: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Detect OLTP queries that are too slow for their expected latency profile."""
+    if not metadata:
+        return None
+
+    try:
+        duration_ms = float(metadata.get("TOTAL_ELAPSED_TIME") or metadata.get("TOTAL_DURATION") or 0)
+        rows_produced = float(metadata.get("ROWS_PRODUCED") or 0)
+    except (TypeError, ValueError):
+        return None
+
+    sql_text = (metadata.get("QUERY_TEXT") or metadata.get("SQL_TEXT") or "").upper().strip()
+    qtype = (metadata.get("QUERY_TYPE") or metadata.get("STATEMENT_TYPE") or "").upper()
+
+    is_bulk_dml = qtype in ("INSERT", "MERGE", "COPY", "UPDATE", "CREATE_TABLE_AS_SELECT", "CTAS")
+    is_insert_select = sql_text.startswith("INSERT") and "SELECT" in sql_text and "VALUES" not in sql_text
+    if is_bulk_dml or is_insert_select:
+        return None
+
+    is_oltp_shape = rows_produced <= 10000
+
+    if not is_oltp_shape:
+        return None
+
+    if duration_ms < 100:
+        return None
+
+    if duration_ms >= 1000:
+        severity = "HIGH"
+        finding = (
+            f"OLTP-shaped query took {duration_ms/1000:.2f}s to return {int(rows_produced):,} rows. "
+            f"Point/small-range lookups on Hybrid Tables should typically complete in <100ms."
+        )
+    elif duration_ms >= 500:
+        severity = "MEDIUM"
+        finding = (
+            f"OLTP-shaped query took {duration_ms:.0f}ms to return {int(rows_produced):,} rows. "
+            f"This is slower than expected for a Hybrid Table point lookup."
+        )
+    else:
+        severity = "LOW"
+        finding = (
+            f"OLTP-shaped query took {duration_ms:.0f}ms to return {int(rows_produced):,} rows. "
+            f"Consider investigating if sub-100ms latency is required."
+        )
+
+    return {
+        "check": "OLTP Latency",
+        "rule": "SLOW_OLTP_QUERY",
+        "severity": severity,
+        "finding": finding,
+        "suggestion": (
+            "Investigate index coverage, predicate selectivity, and whether the right indexes exist. "
+            "Check for non-sargable predicates (functions/casts on indexed columns). "
+            "If this is actually an analytic pattern, consider using standard tables instead."
+        ),
+        "latency_ms": duration_ms,
+        "rows_produced": rows_produced,
     }
 
 
@@ -365,7 +427,8 @@ def analyze_ht_best_practices(
             }
         )
 
-    if " WHERE " not in sql_upper and not is_bulk_sql_pattern:
+    has_where_clause = bool(re.search(r'\bWHERE\b', sql_upper))
+    if not has_where_clause and not is_bulk_sql_pattern:
         findings["score"] -= 10
         findings["warnings"].append(
             {
@@ -386,6 +449,12 @@ def analyze_ht_best_practices(
     if bulk_load:
         findings["score"] -= 15
         findings["warnings"].append(bulk_load)
+
+    slow_oltp = detect_slow_oltp_pattern(metadata)
+    if slow_oltp:
+        severity_penalty = 25 if slow_oltp["severity"] == "HIGH" else 15
+        findings["score"] -= severity_penalty
+        findings["warnings"].append(slow_oltp)
 
     score = max(0, min(100, findings["score"]))
     findings["score"] = score

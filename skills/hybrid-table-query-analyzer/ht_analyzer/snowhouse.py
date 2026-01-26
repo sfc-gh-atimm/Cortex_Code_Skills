@@ -37,6 +37,23 @@ def fetch_query_metadata(session: Session, uuid: str, deployment: Optional[str] 
     return metadata
 
 
+def fetch_deployment_and_metadata(
+    session: Session, uuid: str, deployment: Optional[str] = None
+) -> Tuple[str, Dict[str, Any]]:
+    """
+    Combined fetch of deployment + metadata in a single Snowhouse query.
+    More efficient than calling resolve_deployment_for_uuid + fetch_query_metadata separately.
+    """
+    dep, meta, error = get_deployment_and_metadata(
+        session=session,
+        query_uuid=uuid,
+        deployment_override=deployment,
+    )
+    if not dep or not meta:
+        raise ValueError(error or "Unable to fetch deployment and metadata for UUID")
+    return dep, meta
+
+
 def fetch_history_context(session: Session, meta: Dict[str, Any]) -> Dict[str, Any]:
     history_df, history_error = get_query_history_for_hash(session=session, metadata=meta, days=30)
     if history_error or history_df is None or getattr(history_df, "empty", False):
@@ -57,71 +74,128 @@ def get_deployment_for_uuid(session: Session, query_uuid: str) -> Tuple[Optional
         return None, "Invalid UUID format (too short)"
 
     query_uuid = query_uuid.strip()
+    uuid_ts_expr = f"TO_TIMESTAMP(TO_NUMBER(LEFT('{query_uuid}', 8), 'XXXXXXXX') * 60)"
 
-    query_job_etl_v = f"""
+    query_combined = f"""
     WITH params AS (
         SELECT
             '{query_uuid}'::string AS uuid,
-            TO_TIMESTAMP(TO_NUMBER(LEFT('{query_uuid}', 8), 'XXXXXXXX') * 60) AS uuid_ts
+            {uuid_ts_expr} AS uuid_ts
+    ),
+    job_etl AS (
+        SELECT deployment, 1 as priority
+        FROM SNOWHOUSE_IMPORT.PROD.JOB_ETL_V j
+        JOIN params p ON j.uuid = p.uuid
+        WHERE j.created_on BETWEEN DATEADD(hour, -3, p.uuid_ts) AND DATEADD(hour, 3, p.uuid_ts)
+        QUALIFY ROW_NUMBER() OVER (ORDER BY j.created_on DESC) = 1
+    ),
+    usage AS (
+        SELECT deployment, 2 as priority
+        FROM SNOWHOUSE_IMPORT.PROD.USAGE_TRACKING_V_LAST_90 ut
+        JOIN params p ON ut.job_uuid = p.uuid
+        WHERE ut.ds BETWEEN DATE(p.uuid_ts) - 1 AND DATE(p.uuid_ts) + 1
+        QUALIFY ROW_NUMBER() OVER (ORDER BY ut.ds DESC) = 1
+    ),
+    jps AS (
+        SELECT deployment, 3 as priority
+        FROM SNOWHOUSE_IMPORT.PROD.JOB_ETL_JPS_V j
+        JOIN params p ON j.uuid = p.uuid
+        WHERE j.created_on BETWEEN DATEADD(hour, -3, p.uuid_ts) AND DATEADD(hour, 3, p.uuid_ts)
+        QUALIFY ROW_NUMBER() OVER (ORDER BY j.created_on DESC) = 1
+    ),
+    combined AS (
+        SELECT * FROM job_etl
+        UNION ALL SELECT * FROM usage
+        UNION ALL SELECT * FROM jps
     )
-    SELECT deployment
-    FROM SNOWHOUSE_IMPORT.PROD.JOB_ETL_V j
-    JOIN params p ON j.uuid = p.uuid
-    WHERE j.created_on BETWEEN DATEADD(hour, -3, p.uuid_ts)
-                           AND DATEADD(hour,  3, p.uuid_ts)
-    QUALIFY ROW_NUMBER() OVER (ORDER BY j.created_on DESC) = 1
+    SELECT deployment FROM combined ORDER BY priority LIMIT 1
     """
 
     try:
-        result = session.sql(query_job_etl_v).collect()
-        if result and len(result) > 0 and result[0]["DEPLOYMENT"]:
-            return result[0]["DEPLOYMENT"], None
-    except Exception:
-        pass
-
-    query_usage = f"""
-    WITH params AS (
-        SELECT
-            '{query_uuid}'::string AS uuid,
-            TO_TIMESTAMP(TO_NUMBER(LEFT('{query_uuid}', 8), 'XXXXXXXX') * 60) AS uuid_ts
-    )
-    SELECT deployment
-    FROM SNOWHOUSE_IMPORT.PROD.USAGE_TRACKING_V_LAST_90 ut
-    JOIN params p ON ut.job_uuid = p.uuid
-    WHERE ut.ds BETWEEN DATE(p.uuid_ts) - 1
-                   AND DATE(p.uuid_ts) + 1
-    QUALIFY ROW_NUMBER() OVER (ORDER BY ut.ds DESC) = 1
-    """
-
-    try:
-        result = session.sql(query_usage).collect()
-        if result and len(result) > 0 and result[0]["DEPLOYMENT"]:
-            return result[0]["DEPLOYMENT"], None
-    except Exception:
-        pass
-
-    query_jps = f"""
-    WITH params AS (
-        SELECT
-            '{query_uuid}'::string AS uuid,
-            TO_TIMESTAMP(TO_NUMBER(LEFT('{query_uuid}', 8), 'XXXXXXXX') * 60) AS uuid_ts
-    )
-    SELECT deployment
-    FROM SNOWHOUSE_IMPORT.PROD.JOB_ETL_JPS_V j
-    JOIN params p ON j.uuid = p.uuid
-    WHERE j.created_on BETWEEN DATEADD(hour, -3, p.uuid_ts)
-                           AND DATEADD(hour,  3, p.uuid_ts)
-    QUALIFY ROW_NUMBER() OVER (ORDER BY j.created_on DESC) = 1
-    """
-
-    try:
-        result = session.sql(query_jps).collect()
+        result = session.sql(query_combined).collect()
         if result and len(result) > 0 and result[0]["DEPLOYMENT"]:
             return result[0]["DEPLOYMENT"], None
     except Exception:
         pass
 
     return None, "UUID not found (checked JOB_ETL_V, USAGE_TRACKING, and JOB_ETL_JPS_V)"
+
+
+def get_deployment_and_metadata(
+    session: Session, 
+    query_uuid: str, 
+    deployment_override: Optional[str] = None
+) -> Tuple[Optional[str], Dict[str, Any], Optional[str]]:
+    """
+    Combined query to fetch both deployment and metadata in a single round-trip.
+    Returns (deployment, metadata_dict, error_message).
+    """
+    if not query_uuid or len(query_uuid) < 8:
+        return None, {}, "Invalid UUID format (too short)"
+
+    query_uuid = query_uuid.strip()
+    uuid_ts_expr = f"TO_TIMESTAMP(TO_NUMBER(LEFT('{query_uuid}', 8), 'XXXXXXXX') * 60)"
+
+    if deployment_override and deployment_override.upper() != "PROD":
+        base_schema = f"SNOWHOUSE_IMPORT.{deployment_override.upper()}.JOB_ETL_JPS_V"
+    else:
+        base_schema = "SNOWHOUSE_IMPORT.PROD.JOB_ETL_JPS_V"
+
+    query = f"""
+    WITH params AS (
+        SELECT '{query_uuid}'::string AS uuid, {uuid_ts_expr} AS uuid_ts
+    )
+    SELECT
+      q.uuid AS QUERY_ID,
+      q.description AS QUERY_TEXT,
+      q.database_name AS DATABASE_NAME,
+      q.schema_name AS SCHEMA_NAME,
+      q.user_name AS USER_NAME,
+      q.warehouse_name AS WAREHOUSE_NAME,
+      q.client_send_time AS START_TIME,
+      q.client_send_time AS CLIENT_SEND_TIME,
+      q.created_on AS END_TIME,
+      q.total_duration AS TOTAL_ELAPSED_TIME,
+      q.stats:stats.compilationTime::NUMBER AS COMPILATION_TIME,
+      q.stats:stats.executionTime::NUMBER AS EXECUTION_TIME,
+      q.stats:stats.producedRows::NUMBER AS ROWS_PRODUCED,
+      q.stats:stats.scanBytes::NUMBER AS BYTES_SCANNED,
+      q.stats:stats.writtenBytes::NUMBER AS BYTES_WRITTEN,
+      q.deployment AS DEPLOYMENT,
+      q.account_id AS ACCOUNT_ID,
+      q.error_code AS ERROR_CODE,
+      q.error_message AS ERROR_MESSAGE,
+      q.session_id AS SESSION_ID,
+      COALESCE(q.statement_properties::VARCHAR, 'UNKNOWN') AS QUERY_TYPE,
+      'N/A' AS WAREHOUSE_SIZE,
+      CASE WHEN q.error_code IS NOT NULL AND q.error_code != 0 THEN 'FAILED' ELSE 'SUCCESS' END AS EXECUTION_STATUS,
+      q.total_duration AS TOTAL_DURATION,
+      q.dur_compiling AS DUR_COMPILING,
+      q.dur_gs_executing AS DUR_GS_EXECUTING,
+      q.dur_xp_executing AS DUR_XP_EXECUTING,
+      q.cachedplanid AS CACHEDPLANID,
+      q.query_parameterized_hash AS QUERY_PARAMETERIZED_HASH,
+      q.access_kv_table AS ACCESS_KV_TABLE,
+      q.stats:stats.snowTramFDBIOBytes::NUMBER AS FDB_IO_BYTES,
+      q.stats:stats.snowTramFDBIOBytes::NUMBER AS SNOWTRAM_FDB_IO_BYTES
+    FROM {base_schema} q
+    JOIN params p ON q.uuid = p.uuid
+    WHERE q.created_on BETWEEN DATEADD(day, -1, p.uuid_ts) AND DATEADD(day, 1, p.uuid_ts)
+    ORDER BY q.created_on DESC
+    LIMIT 1
+    """
+
+    try:
+        result = session.sql(query).collect()
+        if result:
+            row = result[0]
+            metadata = row.asDict()
+            deployment = metadata.get("DEPLOYMENT")
+            return deployment, metadata, None
+    except Exception as exc:
+        return None, {}, f"Query failed: {str(exc)}"
+
+    return None, {}, "UUID not found in Snowhouse"
 
 
 def get_query_metadata(

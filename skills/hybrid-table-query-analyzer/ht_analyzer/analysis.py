@@ -1,4 +1,4 @@
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Set
 
 from .analysis_shared import (
     analyze_ht_best_practices,
@@ -7,6 +7,18 @@ from .analysis_shared import (
     detect_kv_heavy_pattern,
     infer_runtime_index_usage,
 )
+from .snowvi_features import (
+    extract_snowvi_features as extract_snowvi_features_from_json,
+    classify_single_query,
+    classify_run_pair,
+    ROOT_CAUSE_LABELS,
+    BATCH_QUERY_LABELS,
+    build_comparison_diff_summary,
+    build_comprehensive_summary,
+)
+from .reasoning_hints import get_reasoning_hints_text, get_applicable_hints, get_prioritized_findings
+from .field_manual_loader import get_field_manual_context
+from .finding_faqs import get_all_faqs_for_findings
 
 
 def build_analysis_features(
@@ -16,9 +28,19 @@ def build_analysis_features(
     comparison_uuid: Optional[str] = None,
     analysis_mode: str = "single",
     snowvi_json: Optional[Dict[str, Any]] = None,
+    comparison_snowvi_json: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     Build the deterministic feature set used for downstream prompts and JSON output.
+    
+    Args:
+        meta: Query metadata from Snowhouse
+        snowvi_features: Pre-extracted SnowVI features (optional)
+        history_context: Historical query context
+        comparison_uuid: UUID for comparison mode
+        analysis_mode: "single" or "compare"
+        snowvi_json: Full SnowVI JSON for primary query
+        comparison_snowvi_json: Full SnowVI JSON for comparison query
     """
     sql_findings, coverage, sql_meta = run_sql_analysis(
         metadata=meta,
@@ -45,6 +67,60 @@ def build_analysis_features(
         )
         sql_findings = list(sql_findings) + list(plan_findings or [])
 
+    all_findings = (bp_findings.get("errors", []) or []) + (bp_findings.get("warnings", []) or [])
+    finding_rules = [f.get("rule", "") for f in all_findings if f.get("rule")]
+    faqs = get_all_faqs_for_findings(finding_rules)
+    
+    root_cause_classification = None
+    if snowvi_json:
+        features = extract_snowvi_features_from_json(snowvi_json)
+        classification_label = classify_single_query(features)
+        root_cause_classification = {
+            "label": classification_label,
+            "description": BATCH_QUERY_LABELS.get(classification_label, classification_label),
+        }
+    
+    comparison_result = None
+    if analysis_mode == "compare" and snowvi_json and comparison_snowvi_json:
+        features_a = extract_snowvi_features_from_json(snowvi_json)
+        features_b = extract_snowvi_features_from_json(comparison_snowvi_json)
+        primary_cause, secondary_cause, diff = classify_run_pair(features_a, features_b)
+        comparison_result = {
+            "primary_cause": primary_cause,
+            "primary_cause_description": ROOT_CAUSE_LABELS.get(primary_cause, primary_cause),
+            "secondary_cause": secondary_cause,
+            "diff": diff,
+            "diff_summary": build_comparison_diff_summary(diff),
+        }
+    
+    workload_type = bp_findings.get("workload_type") or "UNKNOWN"
+    snowvi_mode = "with" if snowvi_json else "without"
+    field_manual_context = get_field_manual_context(
+        findings=bp_findings,
+        workload_type=workload_type,
+        max_tokens=1500,
+        include_general=True,
+        snowvi_mode=snowvi_mode,
+    )
+    
+    finding_ids: Set[str] = set(finding_rules)
+    applicable_hints = get_applicable_hints(finding_ids)
+    prioritized_findings = get_prioritized_findings(finding_ids)
+
+    ht_operator_breakdown = None
+    ht_diagnostics = []
+    comprehensive_summary = None
+    if isinstance(snowvi_features, dict):
+        ht_operator_breakdown = snowvi_features.get("ht_operator_breakdown")
+        ht_diagnostics = snowvi_features.get("ht_diagnostics", [])
+        
+        comprehensive_summary = build_comprehensive_summary(
+            snowvi_features=snowvi_features,
+            bp_findings=bp_findings,
+            sql_findings=sql_findings,
+            metadata=meta,
+        )
+    
     return {
         "query_uuid": meta.get("QUERY_ID"),
         "deployment": meta.get("DEPLOYMENT"),
@@ -58,6 +134,15 @@ def build_analysis_features(
         "grade": bp_findings.get("grade"),
         "score": bp_findings.get("score"),
         "sql_analysis": sql_meta,
+        "faqs": faqs,
+        "root_cause_classification": root_cause_classification,
+        "comparison_result": comparison_result,
+        "field_manual_context": field_manual_context,
+        "reasoning_hints": applicable_hints,
+        "prioritized_findings": prioritized_findings,
+        "ht_operator_breakdown": ht_operator_breakdown,
+        "ht_diagnostics": ht_diagnostics,
+        "comprehensive_summary": comprehensive_summary,
     }
 
 
