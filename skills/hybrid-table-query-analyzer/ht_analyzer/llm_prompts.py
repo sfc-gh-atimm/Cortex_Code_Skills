@@ -63,7 +63,9 @@ ASE_USER_PROMPT_TEMPLATE = dedent("""
     ```json
     {candidate_actions_json}
     ```
-
+    {reasoning_hints_section}
+    {field_manual_section}
+    {comparison_section}
     Instructions:
     1. Start with a one-sentence diagnosis of the main issue.
     2. Then produce a short, numbered list of 3–7 concrete next steps
@@ -73,4 +75,31 @@ ASE_USER_PROMPT_TEMPLATE = dedent("""
        - Be a pure investigative/communication step (e.g. "confirm workload
          latency SLO with customer").
     4. Do NOT generate raw SQL beyond what is provided in `candidate_actions`.
+    5. When multiple findings exist, follow the priority order from reasoning hints.
+""").strip()
+
+
+COMPARISON_SECTION_TEMPLATE = dedent("""
+    Comparison Analysis:
+    This is a before/after comparison between two query executions.
+    - Primary root cause: {primary_cause} ({primary_cause_description})
+    - Secondary factor: {secondary_cause}
+    
+    Metric differences:
+    {diff_summary}
+    
+    Focus your analysis on explaining WHY the performance differs between runs,
+    using the pre-classified root cause as your starting point.
+""").strip()
+
+
+REASONING_HINTS_SECTION_TEMPLATE = dedent("""
+    Domain Reasoning Hints (apply these rules when explaining findings):
+    {hints}
+""").strip()
+
+
+FIELD_MANUAL_SECTION_TEMPLATE = dedent("""
+    Field Manual Context (use this context to inform your recommendations):
+    {field_manual_context}
 """).strip()

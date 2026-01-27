@@ -213,6 +213,151 @@ If critical fields are missing, use ask_user_question to gather them:
 
 ---
 
+### Step 3.5: Snowhouse Telemetry Validation (Optional)
+
+After parsing the template, check if Snowflake account information is available (e.g., "Snowflake Account Name used for POC", deployment info, or account locator). If found, prompt the user to run Snowhouse analysis:
+
+```json
+{
+  "questions": [
+    {"header": "Snowhouse", "question": "Account information found in template. Would you like to validate the discovery template with actual Snowhouse telemetry data?", "type": "options", "multiSelect": false, "options": [
+      {"label": "Yes, run Snowhouse analysis", "description": "Query Snowhouse for actual query patterns, latency metrics, and read:write ratios to validate template claims"},
+      {"label": "No, proceed with template only", "description": "Generate recommendation based only on the discovery template information"}
+    ]}
+  ]
+}
+```
+
+#### If user selects "Yes, run Snowhouse analysis":
+
+##### 3.5.1 Find Account ID from Template Information
+Extract account name and deployment from template, then query Snowhouse:
+
+```bash
+snow sql -c Snowhouse_PAT -q "
+-- Find account ID from account name
+SELECT ID as ACCOUNT_ID, DEPLOYMENT, NAME 
+FROM SNOWHOUSE.PRODUCT.ALL_LIVE_ACCOUNTS 
+WHERE UPPER(NAME) LIKE '%<ACCOUNT_NAME>%' 
+  AND DEPLOYMENT LIKE '%<DEPLOYMENT>%'
+ORDER BY DS DESC
+LIMIT 5;
+"
+```
+
+##### 3.5.2 Query Pattern Analysis (Last 30 Days)
+```bash
+snow sql -c Snowhouse_PAT -q "
+-- Statement type distribution and latency
+SELECT 
+    st.STATEMENT_TYPE,
+    SUM(jf.JOBS) as TOTAL_JOBS,
+    ROUND(AVG(jf.DURATION_TOTAL / NULLIF(jf.JOBS, 0)) / 1000, 3) as AVG_DURATION_SEC,
+    ROUND(MEDIAN(jf.DURATION_TOTAL / NULLIF(jf.JOBS, 0)) / 1000, 3) as MEDIAN_DURATION_SEC,
+    MAX(jf.DURATION_TOTAL) / 1000 as MAX_DURATION_SEC,
+    SUM(jf.HIT_CACHE_JOBS) as CACHE_HITS
+FROM SNOWHOUSE.PRODUCT.JOB_FACT jf
+JOIN SNOWHOUSE.PRODUCT.STATEMENT_TYPE st ON jf.STATEMENT_TYPE_ID = st.ID
+WHERE jf.DEPLOYMENT = '<DEPLOYMENT>'
+  AND jf.ACCOUNT_ID = <ACCOUNT_ID>
+  AND jf.CREATED_HOUR >= DATEADD('day', -30, CURRENT_TIMESTAMP())
+  AND st.STATEMENT_TYPE IN ('SELECT', 'INSERT', 'UPDATE', 'DELETE', 'MERGE')
+GROUP BY st.STATEMENT_TYPE
+ORDER BY TOTAL_JOBS DESC;
+"
+```
+
+##### 3.5.3 Calculate Read:Write Ratio
+```bash
+snow sql -c Snowhouse_PAT -q "
+SELECT 
+    SUM(CASE WHEN st.STATEMENT_TYPE = 'SELECT' THEN jf.JOBS ELSE 0 END) as TOTAL_SELECTS,
+    SUM(CASE WHEN st.STATEMENT_TYPE IN ('INSERT', 'UPDATE', 'DELETE', 'MERGE') THEN jf.JOBS ELSE 0 END) as TOTAL_DML,
+    ROUND(
+        SUM(CASE WHEN st.STATEMENT_TYPE = 'SELECT' THEN jf.JOBS ELSE 0 END) * 1.0 / 
+        NULLIF(SUM(CASE WHEN st.STATEMENT_TYPE IN ('INSERT', 'UPDATE', 'DELETE', 'MERGE') THEN jf.JOBS ELSE 0 END), 0)
+    , 1) as READ_WRITE_RATIO
+FROM SNOWHOUSE.PRODUCT.JOB_FACT jf
+JOIN SNOWHOUSE.PRODUCT.STATEMENT_TYPE st ON jf.STATEMENT_TYPE_ID = st.ID
+WHERE jf.DEPLOYMENT = '<DEPLOYMENT>'
+  AND jf.ACCOUNT_ID = <ACCOUNT_ID>
+  AND jf.CREATED_HOUR >= DATEADD('day', -30, CURRENT_TIMESTAMP());
+"
+```
+
+##### 3.5.4 Latency Distribution
+```bash
+snow sql -c Snowhouse_PAT -q "
+SELECT 
+    CASE 
+        WHEN jf.DURATION_TOTAL / NULLIF(jf.JOBS, 0) < 10 THEN '1_< 10ms'
+        WHEN jf.DURATION_TOTAL / NULLIF(jf.JOBS, 0) < 100 THEN '2_10-100ms'
+        WHEN jf.DURATION_TOTAL / NULLIF(jf.JOBS, 0) < 1000 THEN '3_100ms-1s'
+        WHEN jf.DURATION_TOTAL / NULLIF(jf.JOBS, 0) < 10000 THEN '4_1-10s'
+        ELSE '5_> 10s' 
+    END as LATENCY_BUCKET,
+    SUM(jf.JOBS) as QUERY_COUNT,
+    ROUND(SUM(jf.JOBS) * 100.0 / SUM(SUM(jf.JOBS)) OVER(), 2) as PERCENTAGE
+FROM SNOWHOUSE.PRODUCT.JOB_FACT jf
+JOIN SNOWHOUSE.PRODUCT.STATEMENT_TYPE st ON jf.STATEMENT_TYPE_ID = st.ID
+WHERE jf.DEPLOYMENT = '<DEPLOYMENT>'
+  AND jf.ACCOUNT_ID = <ACCOUNT_ID>
+  AND jf.CREATED_HOUR >= DATEADD('day', -30, CURRENT_TIMESTAMP())
+  AND st.STATEMENT_TYPE = 'SELECT'
+GROUP BY LATENCY_BUCKET
+ORDER BY LATENCY_BUCKET;
+"
+```
+
+##### 3.5.5 Enhanced Decision Matrix with Read:Write Ratio
+
+Use the Snowhouse data to enhance the scoring model:
+
+| Read:Write Ratio | Hybrid Tables | Interactive Analytics | Standard Tables |
+|------------------|---------------|----------------------|-----------------|
+| > 10,000:1 | 0 (overkill for writes) | 3 (ideal) | 2 (acceptable) |
+| 1,000:1 - 10,000:1 | 1 (consider if latency critical) | 3 (ideal) | 2 (acceptable) |
+| 100:1 - 1,000:1 | 2 (good fit) | 2 (acceptable) | 2 (acceptable) |
+| < 100:1 | 3 (designed for this) | 0 (too many writes) | 1 (batch writes only) |
+
+##### 3.5.6 Snowhouse Validation Summary
+
+Include the following in the recommendation report when Snowhouse analysis is performed:
+
+```markdown
+## Snowhouse Telemetry Validation
+
+> ✅ **Template claims validated with actual Snowhouse data**
+
+### Account Verified
+| Field | Value |
+|-------|-------|
+| Account Name | [NAME] |
+| Account ID | [ID] |
+| Deployment | [DEPLOYMENT] |
+| Analysis Period | Last 30 days |
+
+### Actual vs Template Comparison
+| Metric | Template Claim | Snowhouse Actual | Match? |
+|--------|---------------|------------------|--------|
+| Query Latency (P50) | [template value] | [actual value] | ✅/⚠️/❌ |
+| Read:Write Ratio | [estimated/unknown] | [actual ratio]:1 | N/A |
+| Daily Query Volume | [template value] | [actual value] | ✅/⚠️/❌ |
+| Plan Cache Usage | [unknown] | [X]% hit rate | N/A |
+
+### Key Insights from Snowhouse
+- [Insight 1: e.g., "MERGE operations average 40 min - confirms bulk write concerns"]
+- [Insight 2: e.g., "SELECT P50 is 55ms - better than <1s requirement"]
+- [Insight 3: e.g., "Plan cache hit rate is 0% - optimization opportunity"]
+
+### Confidence Adjustment
+**Original confidence (template only):** [High/Medium/Low]
+**Adjusted confidence (with Snowhouse):** [Very High/High/Medium/Low]
+**Reason:** [Explanation of adjustment]
+```
+
+---
+
 ### Step 4: Decision Matrix Evaluation
 
 #### 4.1 Primary Decision Criteria
@@ -763,6 +908,30 @@ with open(input_template_path, 'w') as f:
 - User asks "what should I recommend for this OLTP use case"
 - User mentions "OLTP discovery" or "discovery template"
 - User asks for talking points or recommendations for OLTP products
+- User asks to "validate the template with Snowhouse" or "check actual telemetry"
+
+---
+
+## Snowhouse Integration (Optional Enhancement)
+
+This skill can optionally integrate with Snowhouse to validate discovery template claims with actual telemetry data. When account information is present in the template, the skill will prompt the user to run Snowhouse analysis.
+
+### Benefits of Snowhouse Validation
+1. **Quantitative confirmation** of qualitative POC findings
+2. **Read:Write ratio calculation** for product selection
+3. **Actual latency metrics** (P50, P99) vs documented estimates
+4. **Plan cache analysis** to identify optimization opportunities
+5. **Ongoing monitoring queries** for continued assessment
+
+### Key Snowhouse Tables Used
+| Table | Purpose |
+|-------|---------|
+| `SNOWHOUSE.PRODUCT.JOB_FACT` | Query execution metrics (latency, volume) |
+| `SNOWHOUSE.PRODUCT.STATEMENT_TYPE` | Statement type classification |
+| `SNOWHOUSE.PRODUCT.ALL_LIVE_ACCOUNTS` | Account name to ID mapping |
+
+### Connection Requirement
+Requires `Snowhouse_PAT` connection with access to SNOWHOUSE.PRODUCT schema.
 
 ---
 

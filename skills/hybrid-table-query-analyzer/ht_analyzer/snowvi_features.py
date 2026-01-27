@@ -32,6 +32,236 @@ def safe_dict_get(obj: Any, key: str, default: Any = None) -> Any:
 
 
 # =============================================================================
+# WORKER DETAIL STATS EXTRACTION (Stats Tree Format)
+# =============================================================================
+
+HT_PROFILING_STATS = [
+    "profSnowTramOp",
+    "profKvTableScanRso",
+    "profHybridTableProbeRso",
+    "profHybridIndexScanRso",
+    "profHybridTableStreamScanRso",
+    "ioRemoteKvBlobReadBytes",
+    "ioRemoteKvBlobReadRequests",
+    "ioLocalKvBlobReadBytes",
+    "ioLocalKvBlobReadRequests",
+    "snowTramKvsTotalLatency",
+    "snowTramKvsGrvLatency",
+    "snowTramKvsCommitLatency",
+    "rsoProfSnowTramOp",
+    "rsoProfKvBulkLoadOp",
+    "profRemoteKVBlobRead",
+    "profLocalKVBlobRead",
+    "elapsedTime",
+    "userCpuTime",
+    "profCpu",
+    "profIdle",
+    "profHjRso",
+    "profFilterRso",
+    "profProjRso",
+    "profResRso",
+    "profSetup",
+    "profTeardown",
+    "producedRows",
+]
+
+
+def extract_stats_from_worker_detail(snowvi_json: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Extract operator profiling stats from SnowVI queryOverview.stats.
+    
+    This function builds a name→value mapping for HT-related profiling stats.
+    Time values are converted to milliseconds.
+    
+    Returns:
+        Dict with stat names as keys and values in ms (for time) or raw values
+    """
+    stats: Dict[str, Any] = {}
+    
+    try:
+        query_data = safe_dict_get(snowvi_json, "queryData", {})
+        data = safe_dict_get(query_data, "data", {})
+        global_info = safe_dict_get(data, "globalInfo", {})
+        query_overview = safe_dict_get(global_info, "queryOverview", {})
+        raw_stats = safe_dict_get(query_overview, "stats", {})
+        
+        if not raw_stats or not isinstance(raw_stats, dict):
+            return stats
+        
+        us_to_ms = [
+            "snowTramInitTimeUs",
+            "snowTramExecuteTimeUs", 
+            "snowTramFinalizeTimeUs",
+            "snowTramGrpcTimeUs",
+            "kvBlobScanTime",
+            "kvBlobParquetScanTime",
+            "kvBlobTotalColumnarCacheTime",
+            "kvBlobCollectRowsetsTime",
+            "kvBlobParquetReaderInitTime",
+            "kvBlobScanMergeTime",
+            "kvBlobWriteTime",
+        ]
+        
+        ns_to_ms = [
+            "xpParseStatementSnowTramInitNs",
+        ]
+        
+        direct_ms = [
+            "fdbTotalDurationMs",
+        ]
+        
+        for key in us_to_ms:
+            val = raw_stats.get(key, 0)
+            if val:
+                stats[key] = val / 1000.0
+                stats[f"{key}_unit"] = "ms"
+        
+        for key in ns_to_ms:
+            val = raw_stats.get(key, 0)
+            if val:
+                stats[key] = val / 1_000_000.0
+                stats[f"{key}_unit"] = "ms"
+        
+        for key in direct_ms:
+            val = raw_stats.get(key, 0)
+            if val:
+                stats[key] = float(val)
+                stats[f"{key}_unit"] = "ms"
+        
+        count_stats = [
+            "kvBlobScanRanges",
+            "kvBlobScanRangeGranules",
+            "snowTramKvsTransactionExecuted",
+            "fdbNumTransactions",
+            "fdbSentBytes",
+            "ioLocalKvParquetReadBytes",
+        ]
+        
+        for key in count_stats:
+            val = raw_stats.get(key, 0)
+            if val:
+                stats[key] = val
+        
+        stats["_has_worker_stats"] = True
+        
+    except Exception as e:
+        stats["_worker_stats_error"] = str(e)
+    
+    return stats
+
+
+def extract_ht_operator_breakdown(snowvi_json: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Extract a breakdown of HT-related operator times from SnowVI.
+    
+    Returns a dict with:
+    - total_ht_time_ms: Total time in HT operators
+    - breakdown: Dict of operator → time_ms
+    - dominant_operator: The operator consuming most time
+    - explanation: Human-readable explanation of where time is spent
+    """
+    result = {
+        "total_ht_time_ms": 0.0,
+        "breakdown": {},
+        "dominant_operator": None,
+        "explanation": "",
+        "diagnostics": [],
+    }
+    
+    stats = extract_stats_from_worker_detail(snowvi_json)
+    if not stats.get("_has_worker_stats"):
+        result["explanation"] = "Worker detail stats not available in this SnowVI export"
+        return result
+    
+    ht_operators = {
+        "SnowTram Init": stats.get("snowTramInitTimeUs", 0),
+        "SnowTram Execute": stats.get("snowTramExecuteTimeUs", 0),
+        "SnowTram Finalize": stats.get("snowTramFinalizeTimeUs", 0),
+        "SnowTram gRPC": stats.get("snowTramGrpcTimeUs", 0),
+        "KV Blob Scan": stats.get("kvBlobScanTime", 0),
+        "KV Parquet Scan": stats.get("kvBlobParquetScanTime", 0),
+        "KV Columnar Cache": stats.get("kvBlobTotalColumnarCacheTime", 0),
+        "FDB Total": stats.get("fdbTotalDurationMs", 0),
+        "XP SnowTram Init": stats.get("xpParseStatementSnowTramInitNs", 0),
+    }
+    
+    for op_name, time_ms in ht_operators.items():
+        if time_ms and time_ms > 0:
+            result["breakdown"][op_name] = round(time_ms, 2)
+            result["total_ht_time_ms"] += time_ms
+    
+    if result["breakdown"]:
+        dominant = max(result["breakdown"].items(), key=lambda x: x[1])
+        result["dominant_operator"] = dominant[0]
+        result["dominant_time_ms"] = dominant[1]
+        
+        query_data = safe_dict_get(snowvi_json, "queryData", {})
+        data = safe_dict_get(query_data, "data", {})
+        global_info = safe_dict_get(data, "globalInfo", {})
+        query_overview = safe_dict_get(global_info, "queryOverview", {})
+        xp_ms = safe_num(safe_dict_get(query_overview, "xpExecDuration"))
+        
+        if xp_ms and xp_ms > 0:
+            ht_share = (result["total_ht_time_ms"] / xp_ms) * 100
+            result["ht_share_of_xp"] = round(ht_share, 1)
+            
+            if ht_share > 50:
+                result["diagnostics"].append({
+                    "severity": "warning",
+                    "finding": f"HT operations consume {ht_share:.0f}% of XP execution time",
+                    "detail": f"Dominant: {dominant[0]} ({dominant[1]:.0f}ms)",
+                })
+        
+        breakdown_str = ", ".join([f"{k}: {v:.0f}ms" for k, v in 
+            sorted(result["breakdown"].items(), key=lambda x: -x[1])[:3]])
+        result["explanation"] = f"HT time breakdown: {breakdown_str}"
+        
+        if "SnowTram Init" in result["dominant_operator"]:
+            result["diagnostics"].append({
+                "severity": "high",
+                "finding": f"SnowTram initialization took {dominant[1]:.0f}ms - this is the dominant cost",
+                "suggestion": "High SnowTram init time often indicates cold start or FDB cluster warmup. "
+                             "For sustained workloads, this should amortize. If persistent, check FDB cluster health.",
+            })
+        elif result["dominant_operator"] == "SnowTram Execute":
+            result["diagnostics"].append({
+                "severity": "info",
+                "finding": "SnowTram execution dominates - active FDB transaction processing",
+                "suggestion": "Check FDB cluster metrics for latency spikes. Consider transaction batching if many small ops.",
+            })
+        elif result["dominant_operator"] == "KV Blob Scan":
+            result["diagnostics"].append({
+                "severity": "info",
+                "finding": "KV Blob Scan dominates - scanning blob storage for HT data",
+                "suggestion": "Verify index coverage for WHERE predicates. Excessive blob scanning suggests missing index.",
+            })
+        elif result["dominant_operator"] == "FDB Total":
+            result["diagnostics"].append({
+                "severity": "info",
+                "finding": "FDB storage layer is the bottleneck",
+                "suggestion": "Check FDB cluster health, storage server latency, and network conditions.",
+            })
+    else:
+        result["explanation"] = "No HT operator profiling data found (query may not touch Hybrid Tables)"
+    
+    kv_bytes = stats.get("ioLocalKvParquetReadBytes", 0)
+    kv_ranges = stats.get("kvBlobScanRanges", 0)
+    if kv_bytes > 0:
+        result["kv_io"] = {
+            "local_parquet_bytes_read": kv_bytes,
+            "scan_ranges": kv_ranges,
+        }
+        if kv_bytes > 10_000_000:
+            result["diagnostics"].append({
+                "severity": "warning",
+                "finding": f"High KV I/O: {kv_bytes / 1_000_000:.1f}MB read from KV parquet",
+                "suggestion": "Large data movement. Consider if this workload is better suited for Standard Tables.",
+            })
+    
+    return result
+
+
+# =============================================================================
 # HYBRID TABLE ACCESS PATH EXTRACTION (GLEAN 450+ Recommendations)
 # =============================================================================
 
@@ -628,12 +858,10 @@ def extract_snowvi_features(snowvi_json: Dict[str, Any]) -> Dict[str, Any]:
         access_paths = extract_ht_access_paths_from_snowvi(snowvi_json)
         features["access_paths"] = access_paths
         features["has_access_paths"] = len(access_paths) > 0
-        # Check if any table has analytic access pattern
         features["has_analytic_access_pattern"] = any(
             ap.get("is_analytic_pattern", False) 
             for ap in access_paths.values()
         )
-        # List tables with analytic patterns
         features["analytic_access_tables"] = [
             alias for alias, ap in access_paths.items()
             if ap.get("is_analytic_pattern", False)
@@ -644,7 +872,462 @@ def extract_snowvi_features(snowvi_json: Dict[str, Any]) -> Dict[str, Any]:
         features["has_analytic_access_pattern"] = False
         features["analytic_access_tables"] = []
 
+    # =========================================================================
+    # WORKER DETAIL STATS (Detailed HT Operator Profiling)
+    # =========================================================================
+    try:
+        worker_stats = extract_stats_from_worker_detail(snowvi_json)
+        features["worker_stats"] = worker_stats
+        features["_has_worker_stats"] = worker_stats.get("_has_worker_stats", False)
+        
+        if features["_has_worker_stats"]:
+            if worker_stats.get("snowTramInitTimeUs"):
+                features["snowtram_init_ms"] = worker_stats["snowTramInitTimeUs"]
+            if worker_stats.get("snowTramExecuteTimeUs"):
+                features["snowtram_execute_ms"] = worker_stats["snowTramExecuteTimeUs"]
+            if worker_stats.get("kvBlobScanTime"):
+                features["kv_blob_scan_ms"] = worker_stats["kvBlobScanTime"]
+            if worker_stats.get("fdbTotalDurationMs"):
+                features["fdb_total_ms"] = worker_stats["fdbTotalDurationMs"]
+            if worker_stats.get("ioLocalKvParquetReadBytes"):
+                features["kv_parquet_bytes_read"] = worker_stats["ioLocalKvParquetReadBytes"]
+    except Exception:
+        features["worker_stats"] = {}
+        features["_has_worker_stats"] = False
+
+    # =========================================================================
+    # HT OPERATOR BREAKDOWN (Diagnostic Summary)
+    # =========================================================================
+    try:
+        ht_breakdown = extract_ht_operator_breakdown(snowvi_json)
+        features["ht_operator_breakdown"] = ht_breakdown
+        features["ht_diagnostics"] = ht_breakdown.get("diagnostics", [])
+        features["_has_ht_breakdown"] = bool(ht_breakdown.get("breakdown"))
+    except Exception:
+        features["ht_operator_breakdown"] = {}
+        features["ht_diagnostics"] = []
+        features["_has_ht_breakdown"] = False
+
     return features
+
+
+# =============================================================================
+# COMPREHENSIVE ANALYSIS SUMMARY
+# =============================================================================
+
+BEST_PRACTICE_CHECKS = [
+    {
+        "id": "BP_WHERE_CLAUSE",
+        "name": "WHERE Clause Present",
+        "description": "Query should have filtering predicates to limit data scanned",
+        "severity": "HIGH",
+    },
+    {
+        "id": "BP_BOUND_VARIABLES",
+        "name": "Bound Variables Used",
+        "description": "Use parameterized queries (:1, ?) for plan cache efficiency",
+        "severity": "MEDIUM",
+    },
+    {
+        "id": "BP_LIMIT_CLAUSE",
+        "name": "LIMIT/TOP Clause",
+        "description": "OLTP queries should limit result set size",
+        "severity": "MEDIUM",
+    },
+    {
+        "id": "BP_INDEX_COVERAGE",
+        "name": "Index Coverage",
+        "description": "WHERE predicates should be covered by indexes",
+        "severity": "HIGH",
+    },
+    {
+        "id": "BP_PK_USAGE",
+        "name": "Primary Key Usage",
+        "description": "Point lookups should use primary key when possible",
+        "severity": "MEDIUM",
+    },
+    {
+        "id": "BP_OLTP_LATENCY",
+        "name": "OLTP Latency Target",
+        "description": "OLTP queries should complete in <100ms",
+        "severity": "HIGH",
+    },
+    {
+        "id": "BP_NO_FULL_SCAN",
+        "name": "No Full Table Scan",
+        "description": "Avoid full HT scans on large tables",
+        "severity": "HIGH",
+    },
+    {
+        "id": "BP_NO_ANALYTIC_PATTERN",
+        "name": "No Analytic Pattern on HT",
+        "description": "Analytic workloads should use Standard Tables",
+        "severity": "MEDIUM",
+    },
+]
+
+
+def build_comprehensive_summary(
+    snowvi_features: Dict[str, Any],
+    bp_findings: Dict[str, Any],
+    sql_findings: List[Dict[str, Any]],
+    metadata: Dict[str, Any],
+) -> Dict[str, Any]:
+    """
+    Build a comprehensive analysis summary with:
+    1. Best practice check table (pass/fail)
+    2. Likely root cause with confirmation steps
+    3. Prioritized recommendations
+    
+    Args:
+        snowvi_features: Extracted SnowVI features
+        bp_findings: Best practice findings from analyze_ht_best_practices
+        sql_findings: SQL analysis findings
+        metadata: Query metadata from Snowhouse
+        
+    Returns:
+        Dict with structured summary including checks_table, root_cause, recommendations
+    """
+    summary = {
+        "checks_table": [],
+        "root_cause": None,
+        "confirmation_steps": [],
+        "recommendations": [],
+        "timing_breakdown": {},
+        "grade": bp_findings.get("grade", "N/A"),
+        "score": bp_findings.get("score", 0),
+    }
+    
+    sql_text = (metadata.get("QUERY_TEXT") or snowvi_features.get("sql_text") or "")
+    sql_upper = " ".join(sql_text.upper().split())  # Normalize whitespace
+    total_ms = snowvi_features.get("total_ms", 0)
+    xp_ms = snowvi_features.get("xp_ms", 0)
+    rows_produced = snowvi_features.get("rows_produced", 0)
+    
+    all_findings = (bp_findings.get("errors", []) + bp_findings.get("warnings", []) + sql_findings)
+    finding_rules = {f.get("rule", "").upper() for f in all_findings if f.get("rule")}
+    
+    checks = []
+    
+    has_where = bool(" WHERE " in sql_upper)
+    checks.append({
+        "check": "WHERE Clause Present",
+        "status": "PASS" if has_where else "FAIL",
+        "detail": "Query has filtering predicates" if has_where else "No WHERE clause - may scan entire table",
+        "severity": "HIGH" if not has_where else None,
+    })
+    
+    has_bound = snowvi_features.get("uses_bound_variables", False) or "?" in sql_upper or ":1" in sql_upper
+    checks.append({
+        "check": "Bound Variables",
+        "status": "PASS" if has_bound else "WARN",
+        "detail": "Using parameterized queries" if has_bound else "Literal values detected - consider using bind variables",
+        "severity": "MEDIUM" if not has_bound else None,
+    })
+    
+    has_limit = " LIMIT " in sql_upper or " TOP " in sql_upper or " FETCH " in sql_upper
+    is_oltp_shape = rows_produced < 1000 and total_ms < 5000
+    checks.append({
+        "check": "Result Set Limiting",
+        "status": "PASS" if has_limit or not is_oltp_shape else "WARN",
+        "detail": "LIMIT clause present" if has_limit else "No LIMIT - acceptable for small result sets" if rows_produced < 100 else "Consider adding LIMIT for OLTP queries",
+        "severity": "LOW" if not has_limit and is_oltp_shape else None,
+    })
+    
+    pk_not_used = "PRIMARY_KEY_NOT_USED" in finding_rules
+    checks.append({
+        "check": "Primary Key Usage",
+        "status": "FAIL" if pk_not_used else "PASS",
+        "detail": "Primary key not in WHERE clause - using secondary index or scan" if pk_not_used else "OK",
+        "severity": "MEDIUM" if pk_not_used else None,
+    })
+    
+    has_index_issue = any(r in finding_rules for r in ["NO_INDEX_COVERAGE", "MISSING_INDEX", "FULL_TABLE_SCAN"])
+    checks.append({
+        "check": "Index Coverage",
+        "status": "FAIL" if has_index_issue else "PASS",
+        "detail": "WHERE predicates not fully covered by indexes" if has_index_issue else "Predicates covered by available indexes",
+        "severity": "HIGH" if has_index_issue else None,
+    })
+    
+    is_slow_oltp = total_ms > 100 and rows_produced < 1000
+    checks.append({
+        "check": "OLTP Latency (<100ms)",
+        "status": "FAIL" if is_slow_oltp else "PASS",
+        "detail": f"Query took {total_ms:.0f}ms for {int(rows_produced)} rows" if is_slow_oltp else f"Latency acceptable: {total_ms:.0f}ms",
+        "severity": "HIGH" if total_ms > 500 else "MEDIUM" if is_slow_oltp else None,
+    })
+    
+    has_analytic = snowvi_features.get("has_analytic_access_pattern", False)
+    checks.append({
+        "check": "No Analytic Pattern",
+        "status": "FAIL" if has_analytic else "PASS",
+        "detail": "Analytic access pattern detected on Hybrid Table - consider Standard Tables" if has_analytic else "Access pattern appropriate for Hybrid Tables",
+        "severity": "MEDIUM" if has_analytic else None,
+    })
+    
+    summary["checks_table"] = checks
+    
+    failed_checks = [c for c in checks if c["status"] == "FAIL"]
+    warn_checks = [c for c in checks if c["status"] == "WARN"]
+    
+    ht_breakdown = snowvi_features.get("ht_operator_breakdown", {})
+    dominant_op = ht_breakdown.get("dominant_operator")
+    dominant_time = ht_breakdown.get("dominant_time_ms", 0)
+    ht_diagnostics = snowvi_features.get("ht_diagnostics", [])
+    
+    summary["timing_breakdown"] = {
+        "total_ms": total_ms,
+        "xp_ms": xp_ms,
+        "xp_share": f"{(xp_ms/total_ms*100):.0f}%" if total_ms > 0 else "N/A",
+        "dominant_operator": dominant_op,
+        "dominant_time_ms": dominant_time,
+        "ht_operators": ht_breakdown.get("breakdown", {}),
+    }
+    
+    root_cause = None
+    confirmation_steps = []
+    
+    if dominant_op and "SnowTram Init" in dominant_op and dominant_time > 500:
+        root_cause = {
+            "cause": "SNOWTRAM_INITIALIZATION",
+            "summary": f"SnowTram (FDB) initialization is the bottleneck: {dominant_time:.0f}ms ({dominant_time/xp_ms*100:.0f}% of XP time)",
+            "explanation": "The connection setup to FoundationDB is taking excessive time. This typically indicates cold start, cluster warmup, or FDB health issues.",
+            "confidence": "HIGH",
+        }
+        confirmation_steps = [
+            "Check if this is a cold start scenario (first query after idle period)",
+            "Run the same query multiple times - init time should decrease on subsequent runs",
+            "Check FDB cluster health metrics (storage server latency, transaction conflicts)",
+            "Verify warehouse is warm and not scaling up/down",
+        ]
+    elif dominant_op and "FDB" in dominant_op and dominant_time > 100:
+        root_cause = {
+            "cause": "FDB_STORAGE_LATENCY",
+            "summary": f"FDB storage layer latency: {dominant_time:.0f}ms",
+            "explanation": "The FoundationDB storage layer is slow. This may indicate cluster saturation, network issues, or storage server problems.",
+            "confidence": "HIGH",
+        }
+        confirmation_steps = [
+            "Check FDB cluster metrics for latency spikes",
+            "Verify network connectivity between XP and FDB",
+            "Check for concurrent bulk operations that may be saturating the cluster",
+        ]
+    elif has_index_issue or pk_not_used:
+        root_cause = {
+            "cause": "MISSING_INDEX_COVERAGE",
+            "summary": "Query predicates are not covered by indexes",
+            "explanation": "The WHERE clause columns are not indexed, causing table scans instead of index lookups.",
+            "confidence": "HIGH" if has_index_issue else "MEDIUM",
+        }
+        confirmation_steps = [
+            "Review SHOW INDEXES on the Hybrid Table",
+            "Check if WHERE clause columns match index leading columns",
+            "Run EXPLAIN to see if index is being used",
+        ]
+    elif not has_where:
+        root_cause = {
+            "cause": "NO_FILTERING",
+            "summary": "No WHERE clause - scanning entire table",
+            "explanation": "Without filtering predicates, the query must scan all rows in the Hybrid Table.",
+            "confidence": "HIGH",
+        }
+        confirmation_steps = [
+            "Verify this is the intended behavior",
+            "If filtering is needed, add WHERE clause with indexed columns",
+        ]
+    elif has_analytic:
+        root_cause = {
+            "cause": "ANALYTIC_ON_HYBRID",
+            "summary": "Analytic workload running on Hybrid Table",
+            "explanation": "This query pattern (large scans, aggregations) is better suited for Standard Tables optimized for analytics.",
+            "confidence": "MEDIUM",
+        }
+        confirmation_steps = [
+            "Review if this table needs OLTP access patterns",
+            "Consider migrating analytic queries to a Standard Table replica",
+        ]
+    elif is_slow_oltp and not failed_checks:
+        root_cause = {
+            "cause": "INFRASTRUCTURE_OR_ENVIRONMENT",
+            "summary": f"Slow OLTP query ({total_ms:.0f}ms) but best practices pass - likely infrastructure issue",
+            "explanation": "Query follows best practices but is still slow. This suggests FDB cluster load, warehouse contention, or environmental factors.",
+            "confidence": "MEDIUM",
+        }
+        confirmation_steps = [
+            "Check warehouse utilization and queue depth",
+            "Review FDB cluster metrics during query execution",
+            "Test query at different times to rule out contention",
+            "Check for concurrent bulk operations on the same HT",
+        ]
+    else:
+        root_cause = {
+            "cause": "UNKNOWN",
+            "summary": "Unable to determine specific root cause",
+            "explanation": "Query analysis did not identify a clear bottleneck. Manual investigation recommended.",
+            "confidence": "LOW",
+        }
+        confirmation_steps = [
+            "Review full SnowVI profile in Snowsight",
+            "Check operator-level timing breakdown",
+            "Contact Snowflake support if issue persists",
+        ]
+    
+    summary["root_cause"] = root_cause
+    summary["confirmation_steps"] = confirmation_steps
+    
+    recommendations = []
+    priority = 1
+    
+    for check in failed_checks:
+        if check["check"] == "Index Coverage":
+            recommendations.append({
+                "priority": priority,
+                "action": "Add Index on WHERE Clause Columns",
+                "detail": "Create a secondary index on the columns used in WHERE predicates",
+                "impact": "HIGH - Can reduce query time from seconds to milliseconds",
+                "sql_example": "CREATE INDEX idx_<table>_<cols> ON <table>(<col1>, <col2>);",
+            })
+            priority += 1
+        elif check["check"] == "WHERE Clause Present":
+            recommendations.append({
+                "priority": priority,
+                "action": "Add WHERE Clause",
+                "detail": "Add filtering predicates to avoid full table scans",
+                "impact": "HIGH - Critical for OLTP performance",
+                "sql_example": "SELECT ... FROM table WHERE <indexed_column> = <value>;",
+            })
+            priority += 1
+        elif check["check"] == "OLTP Latency (<100ms)":
+            if root_cause and "SNOWTRAM" in root_cause.get("cause", ""):
+                recommendations.append({
+                    "priority": priority,
+                    "action": "Investigate SnowTram Initialization",
+                    "detail": "High init time suggests cold start or FDB issues. For sustained workloads, this should amortize.",
+                    "impact": "HIGH - Init time dominates query execution",
+                })
+            else:
+                recommendations.append({
+                    "priority": priority,
+                    "action": "Optimize Query for OLTP Latency",
+                    "detail": "Review index usage, predicate selectivity, and result set size",
+                    "impact": "HIGH - OLTP queries should be <100ms",
+                })
+            priority += 1
+        elif check["check"] == "Primary Key Usage":
+            recommendations.append({
+                "priority": priority,
+                "action": "Use Primary Key in WHERE Clause",
+                "detail": "Point lookups on PK are most efficient for Hybrid Tables",
+                "impact": "MEDIUM - PK lookups avoid index indirection",
+            })
+            priority += 1
+        elif check["check"] == "No Analytic Pattern":
+            recommendations.append({
+                "priority": priority,
+                "action": "Consider Standard Tables for Analytics",
+                "detail": "Migrate analytic queries to a Standard Table optimized for scans",
+                "impact": "MEDIUM - Better performance for large scans",
+            })
+            priority += 1
+    
+    for check in warn_checks:
+        if check["check"] == "Bound Variables":
+            recommendations.append({
+                "priority": priority,
+                "action": "Use Bind Variables",
+                "detail": "Replace literal values with :1, :2 or ? placeholders for plan cache efficiency",
+                "impact": "MEDIUM - Improves plan cache hit rate",
+                "sql_example": "SELECT * FROM table WHERE id = :1;  -- instead of id = 12345",
+            })
+            priority += 1
+    
+    if not recommendations:
+        if root_cause and root_cause.get("cause") != "UNKNOWN":
+            recommendations.append({
+                "priority": 1,
+                "action": f"Address Root Cause: {root_cause.get('cause', 'Unknown')}",
+                "detail": root_cause.get("explanation", ""),
+                "impact": "HIGH - Primary optimization opportunity",
+            })
+        else:
+            recommendations.append({
+                "priority": 1,
+                "action": "All Best Practices Pass",
+                "detail": "Query follows HT best practices. Performance issues may be environmental.",
+                "impact": "N/A",
+            })
+    
+    summary["recommendations"] = recommendations
+    
+    return summary
+
+
+def format_summary_report(summary: Dict[str, Any]) -> str:
+    """Format the comprehensive summary as a readable text report."""
+    lines = []
+    
+    lines.append("=" * 80)
+    lines.append("HYBRID TABLE QUERY ANALYSIS REPORT")
+    lines.append("=" * 80)
+    lines.append("")
+    
+    lines.append(f"Grade: {summary.get('grade', 'N/A')}  |  Score: {summary.get('score', 0)}/100")
+    lines.append("")
+    
+    lines.append("-" * 80)
+    lines.append("BEST PRACTICE CHECKS")
+    lines.append("-" * 80)
+    lines.append(f"{'Check':<30} {'Status':<8} {'Detail'}")
+    lines.append("-" * 80)
+    for check in summary.get("checks_table", []):
+        status = check["status"]
+        status_icon = "✓" if status == "PASS" else "✗" if status == "FAIL" else "⚠"
+        lines.append(f"{check['check']:<30} {status_icon} {status:<5} {check.get('detail', '')[:40]}")
+    lines.append("")
+    
+    lines.append("-" * 80)
+    lines.append("TIMING BREAKDOWN")
+    lines.append("-" * 80)
+    timing = summary.get("timing_breakdown", {})
+    lines.append(f"Total Duration: {timing.get('total_ms', 0):.0f}ms")
+    lines.append(f"XP Execution:   {timing.get('xp_ms', 0):.0f}ms ({timing.get('xp_share', 'N/A')})")
+    if timing.get("dominant_operator"):
+        lines.append(f"Dominant Op:    {timing.get('dominant_operator')} ({timing.get('dominant_time_ms', 0):.0f}ms)")
+    lines.append("")
+    if timing.get("ht_operators"):
+        lines.append("HT Operator Breakdown:")
+        for op, ms in sorted(timing["ht_operators"].items(), key=lambda x: -x[1])[:5]:
+            lines.append(f"  {op}: {ms:.1f}ms")
+    lines.append("")
+    
+    lines.append("-" * 80)
+    lines.append("ROOT CAUSE ANALYSIS")
+    lines.append("-" * 80)
+    rc = summary.get("root_cause", {})
+    lines.append(f"Cause: {rc.get('cause', 'UNKNOWN')}")
+    lines.append(f"Summary: {rc.get('summary', 'N/A')}")
+    lines.append(f"Confidence: {rc.get('confidence', 'N/A')}")
+    lines.append("")
+    lines.append("Confirmation Steps:")
+    for i, step in enumerate(summary.get("confirmation_steps", []), 1):
+        lines.append(f"  {i}. {step}")
+    lines.append("")
+    
+    lines.append("-" * 80)
+    lines.append("RECOMMENDATIONS")
+    lines.append("-" * 80)
+    for rec in summary.get("recommendations", []):
+        lines.append(f"[P{rec.get('priority', '?')}] {rec.get('action', 'N/A')}")
+        lines.append(f"     Impact: {rec.get('impact', 'N/A')}")
+        lines.append(f"     {rec.get('detail', '')}")
+        if rec.get("sql_example"):
+            lines.append(f"     Example: {rec.get('sql_example')}")
+        lines.append("")
+    
+    lines.append("=" * 80)
+    
+    return "\n".join(lines)
 
 
 # =============================================================================
