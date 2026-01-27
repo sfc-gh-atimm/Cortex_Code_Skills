@@ -1070,6 +1070,7 @@ track_discovery_assessment(
     session=session,
     customer_name="Acme Corp",
     use_case="Real-time inventory lookup",
+    use_case_link="https://link-to-use-case",
     recommendation="Hybrid Tables",
     alternative="Snowflake Postgres",
     confidence="High",
@@ -1125,7 +1126,7 @@ INSERT INTO AFE.PUBLIC_APP_STATE.APP_EVENTS (
     ACTION_TYPE, ACTION_CONTEXT, SUCCESS, DURATION_MS
 )
 SELECT
-    'OLTP Solution Advisor (Skill)',
+    '/oltp-solution-advisor',
     'OLTP Solution Advisor (Skill)',
     '1.0.0',
     CURRENT_USER(),
@@ -1136,6 +1137,7 @@ SELECT
     PARSE_JSON('{
         \"customer_name\": \"<CUSTOMER_NAME>\",
         \"use_case\": \"<USE_CASE>\",
+        \"use_case_link\": \"<USE_CASE_LINK>\",
         \"recommendation\": \"<RECOMMENDED_PRODUCT>\",
         \"confidence\": \"<HIGH/MEDIUM/LOW>\",
         \"template_completeness\": \"<COMPLETE/PARTIAL>\",

@@ -121,6 +121,7 @@ def track_discovery_assessment(
     session: Session,
     customer_name: str,
     use_case: Optional[str] = None,
+    use_case_link: Optional[str] = None,
     recommendation: Optional[str] = None,
     alternative: Optional[str] = None,
     confidence: Optional[str] = None,
@@ -133,6 +134,7 @@ def track_discovery_assessment(
     context = {
         "customer_name": customer_name,
         "use_case": use_case,
+        "use_case_link": use_case_link,
         "recommendation": recommendation,
         "alternative": alternative,
         "confidence": confidence,
