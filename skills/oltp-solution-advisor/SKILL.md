@@ -1,9 +1,9 @@
 ---
-name: oltp-discovery-advisor
-description: "Analyze OLTP discovery templates to recommend Hybrid Tables, Snowflake Postgres, Interactive Tables, or Standard Tables. Use when: reviewing discovery templates, determining OLTP fit, preparing customer recommendations. Triggers: discovery template, OLTP discovery, hybrid tables fit, postgres fit, interactive tables fit."
+name: oltp-solution-advisor
+description: "Analyze OLTP discovery templates to recommend the best tool: Hybrid Tables, Snowflake Postgres, Interactive Tables, or Standard Tables. Use when: reviewing discovery templates, determining OLTP fit, preparing customer recommendations. Triggers: discovery template, OLTP discovery, hybrid tables fit, postgres fit, interactive tables fit."
 ---
 
-# OLTP Discovery Advisor
+# OLTP Solution Advisor
 
 ## Overview
 This skill analyzes completed (or partially completed) OLTP Discovery Templates to determine the best-fit Snowflake solution for customer workloads. It identifies missing information, evaluates requirements against product capabilities, and generates talking points for AEs. This skill assumes the role of a Senior Applied Field Engineer that guides an AE and SE through discovery questions with the end customer. It should always do the following in its assessment:
@@ -150,7 +150,6 @@ Ask the user for the path to the completed discovery template file:
 Read the template file and extract the following key fields:
 
 
-
 #### Customer Info
 - Customer Name
 - Use Case Name
@@ -167,14 +166,14 @@ a number followed by the letter 's' means seconds, and interpret common notation
 | Raw Value | Interpretation | Milliseconds |
 |-----------|----------------|--------------|
 | `<1s`, `< 1s`, `<1 second` | Less than 1 second | < 1000ms |
-| `<100ms`, `< 100ms` | Less than 100ms | < 100ms |
-| `<10ms`, `< 10ms` | Less than 10ms | < 10ms |
+| `<100ms`, `< 100ms` | Less than 100 milliseconds | < 100ms |
+| `<10ms`, `< 10ms` | Less than 10 milliseconds | < 10ms |
 | `1-10ms` | 1 to 10 milliseconds | 1-10ms |
 | `10-50ms` | 10 to 50 milliseconds | 10-50ms |
 | `50-100ms` | 50 to 100 milliseconds | 50-100ms |
-| `100ms-1s`, `100ms - 1s` | 100ms to 1 second | 100-1000ms |
+| `100ms-1s`, `100ms - 1s` | 100 milliseconds to 1 second | 100-1000ms |
 | `sub-second` | Less than 1 second | < 1000ms |
-| `sub-10ms` | Less than 10ms | < 10ms |
+| `sub-10ms` | Less than 10 milliseconds | < 10ms |
 | `instant` | Very low latency | < 10ms |
 
 **Important:** Treat `less than 1 second` as a **valid and specific requirement** meaning "sub-second latency" (< 1000ms). This is NOT vague. It indicates the customer needs responses faster than 1 second, which is suitable for any solution depending on the remaining factors.
@@ -494,9 +493,9 @@ This is the FIRST output - a concise table showing the top 2 recommended product
 
 ---
 
-# OLTP Discovery Advisor Assessment
+# OLTP Solution Advisor Assessment
 **Assessment Date:** [Date]
-**Assessed By:** OLTP Discovery Advisor Skill
+**Assessed By:** OLTP Solution Advisor Skill
 
 ## Quick Recommendation Summary
 
@@ -1126,8 +1125,8 @@ INSERT INTO AFE.PUBLIC_APP_STATE.APP_EVENTS (
     ACTION_TYPE, ACTION_CONTEXT, SUCCESS, DURATION_MS
 )
 SELECT
-    'OLTP Discovery Advisor (Skill)',
-    'OLTP Discovery Advisor (Skill)',
+    'OLTP Solution Advisor (Skill)',
+    'OLTP Solution Advisor (Skill)',
     '1.0.0',
     CURRENT_USER(),
     CURRENT_ROLE(),
