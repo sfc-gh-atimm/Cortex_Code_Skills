@@ -109,8 +109,8 @@ Answers to these questions will assist the specialist team in recommending solut
 | **Row size range** | \<row counts for largest tables\> |
 | **AVG operations per second** | \<system expected TPS\> |
 | **PEAK operations per second** | \<system expected TPS\> |
-| **P50 Latency Expectation** | \<i.e. 1-10ms, 10-50ms, \<100ms\> |
-| **P99 Latency Expectation** | \<i.e. 1-10ms, 10-50ms, \<100ms\> |
+| **P50 Latency Expectation** | \1-10ms, 10-50ms, \<100ms |
+| **P99 Latency Expectation** | \1-10ms, 10-50ms, \<100ms |
 | **Bulk Writes & Updates** | Hourly bulk updates, periodic row updates |
 | **Are Primary Keys well defined?** |  |
 | **Total Direct Cost** | ? |
@@ -161,7 +161,8 @@ Read the template file and extract the following key fields:
 - Is workload migrating from Postgres?
 
 #### Latency Value Parsing
-When extracting P50/P99 latency values from templates, interpret common notations as follows:
+When extracting P50/P99 latency values from templates, the abbreviation ms means milliseconds,
+a number followed by the letter 's' means seconds, and interpret common notations as follows:
 
 | Raw Value | Interpretation | Milliseconds |
 |-----------|----------------|--------------|
@@ -176,16 +177,16 @@ When extracting P50/P99 latency values from templates, interpret common notation
 | `sub-10ms` | Less than 10ms | < 10ms |
 | `instant` | Very low latency | < 10ms |
 
-**Important:** Treat `<1s` as a **valid and specific requirement** meaning "sub-second latency" (< 1000ms). This is NOT vague—it indicates the customer needs responses faster than 1 second, which is suitable for Interactive Tables or potentially Hybrid Tables depending on other factors.
+**Important:** Treat `less than 1 second` as a **valid and specific requirement** meaning "sub-second latency" (< 1000ms). This is NOT vague. It indicates the customer needs responses faster than 1 second, which is suitable for any solution depending on the remaining factors.
 
 #### Technical Requirements
 | Field | Required for Assessment | Notes |
 |-------|------------------------|-------|
 | Data Volume / Size | Yes | Affects storage tier recommendations |
 | Row size range | Yes | Large tables may have performance implications |
-| AVG operations per second | **Critical** | Key differentiator for Hybrid vs Interactive |
-| PEAK operations per second | **Critical** | Determines if elastic compute needed |
-| P50 Latency Expectation | **Critical** | < 10ms = Hybrid Tables territory |
+| AVG operations per second | **Critical** | Key differentiator for Postgres vs Hybrid vs Interactive |
+| PEAK operations per second | **Critical** | A large between AVG and PEAK indicates that elastic compute is important |
+| P50 Latency Expectation | **Critical** | < 50ms = Postgres and Hybrid Tables territory |
 | P99 Latency Expectation | **Critical** | SLA requirements |
 | Bulk Writes & Updates | Yes | Frequent bulk = Standard Tables may suffice |
 | Primary Keys well defined? | Yes | Required for Hybrid Tables |
@@ -253,7 +254,7 @@ Extract account name and deployment from template, then query Snowhouse:
 
 ```bash
 snow sql -c Snowhouse_PAT -q "
--- Find account ID from account name
+/* Find account ID from account name */
 SELECT ID as ACCOUNT_ID, DEPLOYMENT, NAME 
 FROM SNOWHOUSE.PRODUCT.ALL_LIVE_ACCOUNTS 
 WHERE UPPER(NAME) LIKE '%<ACCOUNT_NAME>%' 
@@ -266,7 +267,7 @@ LIMIT 5;
 ##### 3.5.2 Query Pattern Analysis (Last 30 Days)
 ```bash
 snow sql -c Snowhouse_PAT -q "
--- Statement type distribution and latency
+/* Statement type distribution and latency */
 SELECT 
     st.STATEMENT_TYPE,
     SUM(jf.JOBS) as TOTAL_JOBS,
@@ -382,20 +383,22 @@ Include the following in the recommendation report when Snowhouse analysis is pe
 
 | Criteria | Hybrid Tables | Snowflake Postgres | Interactive Tables | Standard Tables |
 |----------|:-------------:|:-----------------:|:------------------:|:---------------:|
-| **P50 Latency < 10ms** | ✓ Required | ✓ Capable | ✗ Not designed | ✗ Not designed |
+| **P50 Latency < 10ms** | ✗ Not designed | ✓ Capable | ✗ Not designed | ✗ Not designed |
 | **Point Lookups (single-row)** | ✓ Optimized | ✓ Optimized | ~ Acceptable | ✗ Not optimal |
-| **High TPS (> 1000)** | ✓ Designed | ✓ Capable | ~ With caveats | ✗ Not designed |
+| **High TPS (> 1000)** | ✓ Designed | ✓ Designed | ~ With caveats | ✗ Not designed |
 | **Single-row DML** | ✓ Optimized | ✓ Optimized | ✗ Read-focused | ✗ Batch-focused |
 | **Transactional Consistency** | ✓ ACID | ✓ ACID | ~ Limited | ✗ Not ACID |
-| **Postgres Compatibility** | ✗ No | ✓ Full | ✗ No | ✗ No |
+| **Postgres Compatibility** | ✗ Limited | ✓ Full | ✗ No | ✗ No |
 | **Postgres Extensions** | ✗ No | ✓ Many | ✗ No | ✗ No |
 | **Elastic Compute** | ✓ Yes | ✗ Fixed | ✓ Yes | ✓ Yes |
 | **Sub-second Analytics** | ~ Limited | ~ Limited | ✓ Optimized | ✗ Seconds+ |
 | **Bulk Write Performance** | ✗ Slower | ~ Moderate | ✗ Read-focused | ✓ Optimized |
-| **Cost Efficiency (reads)** | ~ Moderate | ~ Moderate | ✓ High | ✓ High |
-| **Cost Efficiency (writes)** | ~ Moderate | ~ Moderate | ✗ N/A | ✓ High |
+| **Cost Efficiency (reads)** | ~ Moderate | ~ Low | ✓ Low | ✓ Moderate |
+| **Cost Efficiency (writes)** | ~ Moderate | ~ Moderate | ✗ N/A | ✓ Low |
 
 #### 4.2 Decision Tree
+Use this decision tree as a starting point. For most logical branches, more than one of the solutions
+may be a good fit.
 
 ```
 START
@@ -699,15 +702,19 @@ After the clarifying questions sections, always append the following list of sup
 
 ---
 
-## Helpful Unistore Slack Groups
+## Helpful Unistore References
 1. [#unistore-workload](https://snowflake.enterprise.slack.com/archives/C02GHK5EN1Z) - to contact the Unistore GTM Sales and Technial Specialists
 1. [#support-unistore](https://snowflake.enterprise.slack.com/archives/C02R14PHAC9) - for questions about potential problems or support related questions
 1. Tag the GTM team by at-mentioning: `@unistore-gtm-team`
 1. Hybrid Tables Compass page
 
-## Helpful Postgres Slack Groups
+## Helpful Postgres References
 1. [#ask-snowflake-postgres](https://snowflake.enterprise.slack.com/archives/C08V01BHQBX) - for Snowflake Posgres questions
 1. Postgres Compass page
+
+## Helpful Interactive Analytics References
+1. Interactive Compass page
+
 
 ```
 
@@ -857,10 +864,10 @@ Ask these questions to confirm the recommendation:
 ## Appendix: Product Comparison Quick Reference
 
 ### Hybrid Tables
-- **Best for:** True OLTP, sub-10ms point lookups, transactional DML
+- **Best for:** True OLTP, sub-50ms point lookups, transactional DML
 - **Not for:** Heavy analytics, bulk writes, Postgres compatibility
 - **Elastic:** Yes
-- **Latency:** < 10ms point lookups
+- **Latency:** < 50ms point lookups
 
 ### Snowflake Postgres
 - **Best for:** Postgres migrations, Postgres expertise, Postgres extensions
@@ -876,7 +883,7 @@ Ask these questions to confirm the recommendation:
 
 ### Standard Tables
 - **Best for:** Batch analytics, aggregations, cost optimization
-- **Not for:** Real-time queries, low latency requirements
+- **Not for:** Real-time queries, low latency requirements, high concurrency
 - **Elastic:** Yes
 - **Latency:** Seconds to minutes
 ```
@@ -957,7 +964,7 @@ Requires `Snowhouse_PAT` connection with access to SNOWHOUSE.PRODUCT schema.
 
 ### Hybrid Tables - When to Recommend
 **Strong Indicators:**
-- P50 latency < 10ms required
+- P50 latency < 50ms required
 - Point lookups dominate workload
 - Single-row INSERT/UPDATE/DELETE operations
 - Need for elastic compute during spikes
@@ -965,8 +972,8 @@ Requires `Snowhouse_PAT` connection with access to SNOWHOUSE.PRODUCT schema.
 - No Postgres-specific requirements
 
 **Caution Flags:**
-- Heavy bulk write operations
-- Complex Postgres stored procedures
+- Heavy bulk write operations per day
+- Complex stored procedures
 - Customer strongly prefers Postgres
 - Analytical aggregations are primary workload
 
@@ -995,7 +1002,7 @@ Requires `Snowhouse_PAT` connection with access to SNOWHOUSE.PRODUCT schema.
 
 **Caution Flags:**
 - Sub-10ms latency required
-- Significant DML operations
+- Reqires significant DML operations
 - True transactional requirements
 - Single-row lookups dominate
 
