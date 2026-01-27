@@ -201,11 +201,11 @@ If critical fields are missing, use ask_user_question to gather them:
 {
   "questions": [
     {"header": "TPS", "question": "What is the expected average operations per second (TPS)?", "type": "text", "defaultValue": "100"},
-    {"header": "Latency", "question": "What is the P50 latency requirement?", "type": "options", "options": [
+    {"header": "Latency", "question": "What is the P50 latency requirement in milliseconds?", "type": "options", "options": [
       {"label": "< 10ms", "description": "Sub-10ms point lookups (OLTP)"},
       {"label": "10-50ms", "description": "Fast transactional queries"},
-      {"label": "50-100ms", "description": "Near-real-time analytics"},
-      {"label": "> 100ms", "description": "Standard analytical queries"}
+      {"label": "50-350ms", "description": "Near-real-time analytics"},
+      {"label": "> 350ms", "description": "Standard analytical queries"}
     ]}
   ]
 }
@@ -319,7 +319,7 @@ Calculate total score for each product and identify:
 
 ### Step 5: Generate Initial Summary (Append to Discovery Template)
 
-After evaluating the template, **append** the following summary directly to the end of the original discovery template file:
+After evaluating the template, always **append** the following summary directly to the end of the original discovery template file:
 
 #### 5.1 Quick Recommendation Summary Table
 This is the FIRST output - a concise table showing the top 2 recommended products:
@@ -527,6 +527,25 @@ The following questions will help validate our recommendation and uncover any fa
 ### Red Flags to Probe
 - [Specific concern from template that needs clarification]
 - [Potential blocker that needs validation]
+```
+
+#### 5.4 Additional Internal Support
+After the clarifying questions sections, always append the following list of support options so the account team can reach out for questions:
+
+```markdown
+
+---
+
+## Helpful Unistore Slack Groups
+1. [#unistore-workload](https://snowflake.enterprise.slack.com/archives/C02GHK5EN1Z) - to contact the Unistore GTM Sales and Technial Specialists
+1. [#support-unistore](https://snowflake.enterprise.slack.com/archives/C02R14PHAC9) - for questions about potential problems or support related questions
+1. Tag the GTM team by at-mentioning: `@unistore-gtm-team`
+1. Hybrid Tables Compass page
+
+## Helpful Postgres Slack Groups
+1. [#ask-snowflake-postgres](https://snowflake.enterprise.slack.com/archives/C08V01BHQBX) - for Snowflake Posgres questions
+1. Postgres Compass page
+
 ```
 
 ---
