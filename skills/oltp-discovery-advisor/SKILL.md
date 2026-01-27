@@ -998,6 +998,8 @@ Requires `Snowhouse_PAT` connection with access to SNOWHOUSE.PRODUCT schema.
 ---
 
 ## Telemetry
+Log every request using the following telemetry configuration and module. The logging destination
+is the Snowhouse environment.
 
 ### Telemetry Configuration
 | Setting | Value |
@@ -1009,7 +1011,7 @@ Requires `Snowhouse_PAT` connection with access to SNOWHOUSE.PRODUCT schema.
 | App Version | `1.0.0` |
 
 ### Using the Telemetry Module
-The skill includes a Python telemetry module at `telemetry_cli.py`. Use this for consistent event logging:
+The skill includes a Python telemetry module at `telemetry_cli.py`. Use this for consistent event logging. If the connection does not exist or has errors, look in the `connection.toml` for a connection to snowhouse.
 
 ```python
 import os
