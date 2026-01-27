@@ -8,6 +8,7 @@ import os
 import time
 from pathlib import Path
 from datetime import datetime
+from io import StringIO
 
 try:
     from snowflake.snowpark import Session
@@ -422,9 +423,157 @@ with tab4:
     else:
         st.info("No UPDATE pattern data available.")
 
+def generate_markdown_report(data: dict) -> str:
+    """Generate a distributable markdown report from analysis data."""
+    lines = []
+    meta = data.get("metadata", {})
+    
+    lines.append("# Unistore Workload Conversion Analysis Report")
+    lines.append("")
+    lines.append(f"**Customer:** {meta.get('customer_name', 'N/A')}")
+    lines.append(f"**Account ID:** {meta.get('account_id', 'N/A')}")
+    lines.append(f"**Account Name:** {meta.get('account_name', 'N/A')}")
+    lines.append(f"**Deployment:** {meta.get('deployment', 'N/A')}")
+    lines.append(f"**Analysis Period:** {meta.get('analysis_days', 30)} days")
+    lines.append(f"**Report Generated:** {meta.get('generated_at', 'N/A')[:19] if meta.get('generated_at') else 'N/A'}")
+    lines.append(f"**Total Queries Analyzed:** {meta.get('total_queries', 0):,}")
+    lines.append("")
+    lines.append("---")
+    lines.append("")
+    
+    lines.append("## Executive Summary")
+    lines.append("")
+    lines.append(f"- **Hybrid Table Candidates:** {meta.get('hybrid_candidates_count', 0)}")
+    lines.append(f"- **Interactive Analytics Candidates:** {meta.get('ia_candidates_count', 0)}")
+    lines.append("")
+    
+    if "statement_summary" in data and not data["statement_summary"].empty:
+        lines.append("### Statement Distribution")
+        lines.append("")
+        lines.append("| Statement Type | Count | % | Avg Duration (ms) |")
+        lines.append("|----------------|-------|---|-------------------|")
+        for _, row in data["statement_summary"].iterrows():
+            lines.append(f"| {row['STATEMENT_TYPE']} | {row['TOTAL_QUERIES']:,} | {row.get('PCT', 0):.1f}% | {row.get('AVG_DURATION_MS', 0):.0f} |")
+        lines.append("")
+    
+    if "update_patterns" in data and not data["update_patterns"].empty:
+        lines.append("### UPDATE Pattern Classification")
+        lines.append("")
+        lines.append("| Pattern | Count | Avg Duration (ms) | Assessment |")
+        lines.append("|---------|-------|-------------------|------------|")
+        for _, row in data["update_patterns"].iterrows():
+            pattern = row["UPDATE_TYPE"]
+            if "Parameterized" in pattern:
+                assessment = "✅ Strong HT Candidate"
+            elif "ETL" in pattern or "Staging" in pattern:
+                assessment = "⚠️ Exclude from HT"
+            elif "Bulk" in pattern:
+                assessment = "❌ Not suitable for HT"
+            else:
+                assessment = "ℹ️ Needs review"
+            lines.append(f"| {pattern} | {row['COUNT']:,} | {row.get('AVG_DURATION_MS', 0):.0f} | {assessment} |")
+        lines.append("")
+    
+    lines.append("---")
+    lines.append("")
+    
+    if "hybrid_candidates" in data and not data["hybrid_candidates"].empty:
+        lines.append("## 🎯 Hybrid Table Candidates")
+        lines.append("")
+        lines.append("Tables with UPDATE/DELETE patterns suitable for sub-10ms OLTP workloads.")
+        lines.append("")
+        df = data["hybrid_candidates"]
+        lines.append("| Rank | Table | UPDATE Count | Parameterized % | P50 Latency (ms) | P99 Latency (ms) |")
+        lines.append("|------|-------|--------------|-----------------|------------------|------------------|")
+        for idx, (_, row) in enumerate(df.nlargest(10, "UPDATE_COUNT").iterrows(), 1):
+            param_pct = row.get('PARAMETERIZED_PCT', row.get('PARAMETERIZED_COUNT', 0) / max(row.get('UPDATE_COUNT', 1), 1) * 100)
+            lines.append(f"| {idx} | `{row['TABLE_NAME']}` | {row['UPDATE_COUNT']:,} | {param_pct:.0f}% | {row.get('P50_DURATION_MS', 0):.0f} | {row.get('P99_DURATION_MS', 0):.0f} |")
+        lines.append("")
+        
+        lines.append("**Recommended Next Steps:**")
+        lines.append("1. Validate primary key structure on candidate tables")
+        lines.append("2. Review query patterns with customer DBA")
+        lines.append("3. Assess application compatibility (driver, connection pooling)")
+        lines.append("4. Create POC plan for top candidate")
+        lines.append("")
+    else:
+        lines.append("## 🎯 Hybrid Table Candidates")
+        lines.append("")
+        lines.append("_No strong Hybrid Table candidates identified._")
+        lines.append("")
+    
+    if "delete_activity" in data and not data["delete_activity"].empty:
+        lines.append("### DELETE Activity")
+        lines.append("")
+        lines.append("| Table | DELETE Count | Avg Duration (ms) |")
+        lines.append("|-------|--------------|-------------------|")
+        for _, row in data["delete_activity"].head(10).iterrows():
+            lines.append(f"| `{row['TABLE_NAME']}` | {row['DELETE_COUNT']:,} | {row.get('AVG_DURATION_MS', 0):.0f} |")
+        lines.append("")
+    
+    lines.append("---")
+    lines.append("")
+    
+    if "ia_candidates" in data and not data["ia_candidates"].empty:
+        lines.append("## 📊 Interactive Analytics Candidates")
+        lines.append("")
+        lines.append("Read-heavy tables suitable for sub-second analytical queries.")
+        lines.append("")
+        df = data["ia_candidates"]
+        
+        if "IA_FIT" in df.columns:
+            fit_order = {"STRONG": 0, "MODERATE": 1, "LOW": 2}
+            df = df.copy()
+            df["_sort"] = df["IA_FIT"].map(fit_order)
+            df = df.sort_values(["_sort", "TOTAL_OPS"], ascending=[True, False])
+        
+        lines.append("| Rank | Table | Total Ops | Read % | Avg Latency (ms) | Fit |")
+        lines.append("|------|-------|-----------|--------|------------------|-----|")
+        for idx, (_, row) in enumerate(df.head(15).iterrows(), 1):
+            fit = row.get('IA_FIT', 'N/A')
+            fit_emoji = "🟢" if fit == "STRONG" else ("🟡" if fit == "MODERATE" else "⚪")
+            lines.append(f"| {idx} | `{row['TABLE_NAME']}` | {row['TOTAL_OPS']:,} | {row.get('READ_PCT', 99):.0f}% | {row.get('AVG_SELECT_MS', 0):.0f} | {fit_emoji} {fit} |")
+        lines.append("")
+        
+        lines.append("**Recommended Next Steps:**")
+        lines.append("1. Confirm read-only or limited DML acceptable")
+        lines.append("2. Validate dashboard/BI access patterns")
+        lines.append("3. Review current caching strategies")
+        lines.append("4. Create POC plan for top candidate")
+        lines.append("")
+    else:
+        lines.append("## 📊 Interactive Analytics Candidates")
+        lines.append("")
+        lines.append("_No strong Interactive Analytics candidates identified._")
+        lines.append("")
+    
+    lines.append("---")
+    lines.append("")
+    lines.append("_Generated by Unistore Workload Conversion Advisor v2.1_")
+    
+    return "\n".join(lines)
+
+
 with tab5:
     track_tab("Summary")
     st.header("📋 Executive Summary")
+    
+    col_header1, col_header2 = st.columns([3, 1])
+    with col_header2:
+        if st.button("📄 Export Markdown", use_container_width=True, help="Generate distributable markdown report"):
+            md_report = generate_markdown_report(data)
+            st.session_state.md_report = md_report
+    
+    if "md_report" in st.session_state:
+        with st.expander("📄 Markdown Report (click to expand)", expanded=False):
+            st.download_button(
+                label="⬇️ Download .md file",
+                data=st.session_state.md_report,
+                file_name=f"workload_analysis_{data.get('metadata', {}).get('customer_name', 'report').replace(' ', '_').lower()}_{datetime.now().strftime('%Y%m%d')}.md",
+                mime="text/markdown",
+                use_container_width=True
+            )
+            st.code(st.session_state.md_report, language="markdown")
     
     if "metadata" in data:
         meta = data["metadata"]
@@ -516,4 +665,4 @@ with tab5:
         telemetry_status = "🟢 Connected" if get_snowpark_session() else "🔴 Disconnected"
         st.caption(f"Telemetry: {telemetry_status}")
     
-    st.caption("Generated by Unistore Workload Conversion Advisor v2.0")
+    st.caption("Generated by Unistore Workload Conversion Advisor v2.1")
