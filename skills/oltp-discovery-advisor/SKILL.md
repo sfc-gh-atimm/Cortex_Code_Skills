@@ -160,6 +160,24 @@ Read the template file and extract the following key fields:
 - Is Customer a Postgres Expert?
 - Is workload migrating from Postgres?
 
+#### Latency Value Parsing
+When extracting P50/P99 latency values from templates, interpret common notations as follows:
+
+| Raw Value | Interpretation | Milliseconds |
+|-----------|----------------|--------------|
+| `<1s`, `< 1s`, `<1 second` | Less than 1 second | < 1000ms |
+| `<100ms`, `< 100ms` | Less than 100ms | < 100ms |
+| `<10ms`, `< 10ms` | Less than 10ms | < 10ms |
+| `1-10ms` | 1 to 10 milliseconds | 1-10ms |
+| `10-50ms` | 10 to 50 milliseconds | 10-50ms |
+| `50-100ms` | 50 to 100 milliseconds | 50-100ms |
+| `100ms-1s`, `100ms - 1s` | 100ms to 1 second | 100-1000ms |
+| `sub-second` | Less than 1 second | < 1000ms |
+| `sub-10ms` | Less than 10ms | < 10ms |
+| `instant` | Very low latency | < 10ms |
+
+**Important:** Treat `<1s` as a **valid and specific requirement** meaning "sub-second latency" (< 1000ms). This is NOT vague—it indicates the customer needs responses faster than 1 second, which is suitable for Interactive Tables or potentially Hybrid Tables depending on other factors.
+
 #### Technical Requirements
 | Field | Required for Assessment | Notes |
 |-------|------------------------|-------|
