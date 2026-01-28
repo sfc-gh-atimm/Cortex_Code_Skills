@@ -71,7 +71,7 @@ These fields are required for accurate assessment:
 
 ## Telemetry
 
-Usage is logged to `AFE.PUBLIC_APP_STATE.APP_EVENTS`:
+Always log skill usage to `AFE.PUBLIC_APP_STATE.APP_EVENTS`:
 
 ```python
 from telemetry_cli import log_event
