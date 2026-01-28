@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from typing import Any
 
 from snowflake.snowpark import Session
@@ -81,7 +82,10 @@ def log_event(
     """
     try:
         ident = _get_identity(session)
-        ctx_json = json.dumps(context or {}, default=str)
+        ctx = context.copy() if context else {}
+        if request_id := os.environ.get("CORTEX_REQUEST_ID"):
+            ctx["cortex_request_id"] = request_id
+        ctx_json = json.dumps(ctx, default=str)
 
         if error and len(error) > 500:
             error = error[:497] + "..."

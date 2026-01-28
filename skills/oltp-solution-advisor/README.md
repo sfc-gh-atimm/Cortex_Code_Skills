@@ -91,3 +91,21 @@ Key queryable columns:
 - `SNOWFLAKE_ACCOUNT_ID` - Customer account analyzed  
 - `RECOMMENDATION` - Final recommendation (HT, PG, IA, STANDARD)
 - `ACTION_CONTEXT` - Full analysis details (VARIANT)
+
+### Joining with Cortex Code CLI Telemetry
+
+The `cortex_request_id` is automatically captured in `ACTION_CONTEXT` when running inside Cortex Code, enabling correlation with CLI request telemetry:
+
+```sql
+SELECT 
+    e.EVENT_TS,
+    e.USER_NAME,
+    e.RECOMMENDATION,
+    e.ACTION_CONTEXT,
+    r.*
+FROM AFE.PUBLIC_APP_STATE.APP_EVENTS e
+LEFT JOIN <db>.CORTEX_CODE_CLI_REQUEST_FACT r
+    ON e.ACTION_CONTEXT:cortex_request_id::STRING = r.REQUEST_ID
+WHERE e.APP_NAME = 'oltp-solution-advisor'
+ORDER BY e.EVENT_TS DESC;
+```
