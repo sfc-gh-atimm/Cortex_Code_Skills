@@ -17,8 +17,19 @@ This skill analyzes a customer's Snowhouse telemetry data (last 30 days) to iden
 
 | Product | Best For | Key Indicators |
 |---------|----------|----------------|
-| **Hybrid Tables** | True OLTP workloads with sub-10ms point lookups, high single-row DML, transactional consistency | High UPDATE/DELETE %, point lookups, parameterized queries, sub-10ms latency requirements |
-| **Interactive Analytics** | Read-heavy analytical workloads requiring sub-second (not sub-10ms) response times | 99%+ reads, dashboard/BI patterns, sub-second latency needs |
+| **Hybrid Tables** | True OLTP workloads with sub-10ms point lookups, high single-row DML, transactional consistency. Warehouse can be shut down. | High UPDATE/DELETE %, point lookups, parameterized queries, sub-10ms latency requirements |
+| **Interactive Analytics** | Read-heavy analytical workloads on wide tables requiring sub-second (not sub-10ms) response times with dynamic column access | 99%+ reads, wide tables (many columns), dashboard/BI patterns, sub-second latency needs, dynamic column selection |
+
+### Key Differences: Hybrid Tables vs Interactive Analytics
+
+| Consideration | Hybrid Tables | Interactive Analytics |
+|---------------|---------------|----------------------|
+| **Warehouse Requirement** | Can operate with warehouse shut down | Warehouse must always be running |
+| **Best Table Shape** | Narrow tables with few columns | Wide tables with many columns |
+| **Column Access Pattern** | Known, fixed columns in queries | Dynamic access to any column |
+| **Latency Target** | Sub-10ms | Sub-second (100ms-1s) |
+| **Write Pattern** | High single-row DML | Primarily read-only |
+| **Cost Model** | Pay per DML operation | Pay for always-on warehouse |
 
 ---
 
@@ -139,9 +150,12 @@ ORDER BY TOTAL_QUERIES DESC;
 ### Step 4: Classify UPDATE Patterns (ETL vs OLTP)
 Before identifying Hybrid Table candidates, classify UPDATE patterns to distinguish ETL from OLTP:
 
+**Note:** Use the deployment-specific schema (e.g., `SNOWHOUSE_IMPORT.VA`) instead of `SNOWHOUSE_IMPORT.PROD` for better performance.
+
 ```bash
 snow sql -c Snowhouse_PAT -q "
 -- Classify UPDATE patterns (ETL vs OLTP)
+-- Using deployment-specific schema for performance
 SELECT 
     CASE 
         WHEN je.DESCRIPTION ILIKE '%TEMP_DB%' OR je.DESCRIPTION ILIKE '%_STG%' OR je.DESCRIPTION ILIKE '%_TEMP%' OR je.DESCRIPTION ILIKE '%WORK_%' THEN 'ETL/Staging'
@@ -153,9 +167,8 @@ SELECT
     COUNT(*) as COUNT,
     ROUND(AVG(je.TOTAL_DURATION), 2) as AVG_DURATION_MS,
     ROUND(MEDIAN(je.TOTAL_DURATION), 2) as P50_DURATION_MS
-FROM SNOWHOUSE_IMPORT.PROD.JOB_ETL_V je
-WHERE je.DEPLOYMENT = '<DEPLOYMENT>'
-  AND je.ACCOUNT_ID = <ACCOUNT_ID>
+FROM SNOWHOUSE_IMPORT.<DEPLOYMENT>.JOB_ETL_V je
+WHERE je.ACCOUNT_ID = <ACCOUNT_ID>
   AND je.CREATED_ON >= DATEADD('day', -<DAYS>, CURRENT_TIMESTAMP())
   AND je.DESCRIPTION ILIKE 'UPDATE%'
   AND je.ERROR_CODE IS NULL
@@ -175,10 +188,13 @@ ORDER BY COUNT DESC;
 ### Step 5: Identify Hybrid Table Candidate Tables
 Look for tables with OLTP-like patterns, **excluding ETL/staging tables**:
 
+**Note:** Use the deployment-specific schema (e.g., `SNOWHOUSE_IMPORT.VA`) instead of `SNOWHOUSE_IMPORT.PROD` for better performance.
+
 ```bash
 snow sql -c Snowhouse_PAT -q "
 -- Tables with UPDATE activity (Hybrid Table candidates)
 -- Using SPLIT_PART for reliable table name extraction
+-- Using deployment-specific schema for performance
 WITH update_queries AS (
     SELECT 
         SPLIT_PART(SPLIT_PART(je.DESCRIPTION, ' ', 2), ' SET', 1) as TABLE_NAME,
@@ -187,9 +203,8 @@ WITH update_queries AS (
             WHEN je.DESCRIPTION ILIKE '%WHERE%=%?%' OR je.DESCRIPTION ILIKE '%WHERE%=%:%' THEN 'Parameterized'
             ELSE 'Literal'
         END as QUERY_TYPE
-    FROM SNOWHOUSE_IMPORT.PROD.JOB_ETL_V je
-    WHERE je.DEPLOYMENT = '<DEPLOYMENT>'
-      AND je.ACCOUNT_ID = <ACCOUNT_ID>
+    FROM SNOWHOUSE_IMPORT.<DEPLOYMENT>.JOB_ETL_V je
+    WHERE je.ACCOUNT_ID = <ACCOUNT_ID>
       AND je.CREATED_ON >= DATEADD('day', -<DAYS>, CURRENT_TIMESTAMP())
       AND je.DESCRIPTION ILIKE 'UPDATE%'
       AND je.ERROR_CODE IS NULL
@@ -220,6 +235,7 @@ LIMIT 30;
 ```bash
 snow sql -c Snowhouse_PAT -q "
 -- Tables with DELETE activity (Hybrid Table candidates)
+-- Using deployment-specific schema for performance
 WITH delete_queries AS (
     SELECT 
         SPLIT_PART(
@@ -229,9 +245,8 @@ WITH delete_queries AS (
             ), ' ', 1
         ) as TABLE_NAME,
         je.TOTAL_DURATION
-    FROM SNOWHOUSE_IMPORT.PROD.JOB_ETL_V je
-    WHERE je.DEPLOYMENT = '<DEPLOYMENT>'
-      AND je.ACCOUNT_ID = <ACCOUNT_ID>
+    FROM SNOWHOUSE_IMPORT.<DEPLOYMENT>.JOB_ETL_V je
+    WHERE je.ACCOUNT_ID = <ACCOUNT_ID>
       AND je.CREATED_ON >= DATEADD('day', -<DAYS>, CURRENT_TIMESTAMP())
       AND je.DESCRIPTION ILIKE 'DELETE%'
       AND je.ERROR_CODE IS NULL
@@ -261,17 +276,19 @@ LIMIT 25;
 ### Step 6: Identify Interactive Analytics Candidate Tables
 Look for read-heavy tables with sub-second latency potential:
 
+**Note:** Use the deployment-specific schema (e.g., `SNOWHOUSE_IMPORT.VA`) instead of `SNOWHOUSE_IMPORT.PROD` for better performance.
+
 ```bash
 snow sql -c Snowhouse_PAT -q "
 -- Read-heavy tables (Interactive Analytics candidates)
+-- Using deployment-specific schema for performance
 WITH table_activity AS (
     SELECT 
         SPLIT_PART(SPLIT_PART(je.DESCRIPTION, 'FROM ', 2), ' ', 1) as TABLE_NAME,
         CASE WHEN je.DESCRIPTION ILIKE 'SELECT%' THEN 'SELECT' ELSE 'DML' END as OP_TYPE,
         je.TOTAL_DURATION
-    FROM SNOWHOUSE_IMPORT.PROD.JOB_ETL_V je
-    WHERE je.DEPLOYMENT = '<DEPLOYMENT>'
-      AND je.ACCOUNT_ID = <ACCOUNT_ID>
+    FROM SNOWHOUSE_IMPORT.<DEPLOYMENT>.JOB_ETL_V je
+    WHERE je.ACCOUNT_ID = <ACCOUNT_ID>
       AND je.CREATED_ON >= DATEADD('day', -<DAYS>, CURRENT_TIMESTAMP())
       AND (je.DESCRIPTION ILIKE 'SELECT%FROM%' OR je.DESCRIPTION ILIKE 'INSERT%' OR je.DESCRIPTION ILIKE 'UPDATE%' OR je.DESCRIPTION ILIKE 'DELETE%' OR je.DESCRIPTION ILIKE 'MERGE%')
       AND je.ERROR_CODE IS NULL
@@ -322,18 +339,48 @@ LIMIT 30;
 
 ---
 
+### Step 6b: Check Table Width for IA Candidates (Optional)
+For top IA candidates, check column count to assess suitability for wide-table optimization:
+
+**Note:** This requires querying the customer's `INFORMATION_SCHEMA` which may not be accessible via Snowhouse. If available, run this on the customer's account directly.
+
+```sql
+-- Check column count for IA candidate tables
+-- Run on customer account (not Snowhouse)
+SELECT 
+    TABLE_CATALOG || '.' || TABLE_SCHEMA || '.' || TABLE_NAME as FULL_TABLE_NAME,
+    COUNT(*) as COLUMN_COUNT,
+    CASE 
+        WHEN COUNT(*) >= 50 THEN 'IDEAL (wide table)'
+        WHEN COUNT(*) >= 20 THEN 'GOOD'
+        WHEN COUNT(*) >= 10 THEN 'MODERATE'
+        ELSE 'NARROW (may not benefit)'
+    END as IA_WIDTH_FIT
+FROM <DATABASE>.INFORMATION_SCHEMA.COLUMNS
+WHERE TABLE_NAME IN ('<CANDIDATE_TABLE_1>', '<CANDIDATE_TABLE_2>')
+GROUP BY TABLE_CATALOG, TABLE_SCHEMA, TABLE_NAME
+ORDER BY COLUMN_COUNT DESC;
+```
+
+**Why table width matters for Interactive Analytics:**
+- IA is optimized for wide tables with many columns
+- IA enables dynamic access to any column without performance penalty
+- Narrow tables (<10 columns) may not see significant benefit over standard tables
+
+---
+
 ### Step 7: Sample Query Text for Top Candidates
 Sample actual query text to validate patterns:
 
 ```bash
 snow sql -c Snowhouse_PAT -q "
 -- Sample UPDATE queries for top candidate table
+-- Using deployment-specific schema for performance
 SELECT 
     LEFT(je.DESCRIPTION, 300) as QUERY_PREVIEW,
     je.TOTAL_DURATION as DURATION_MS
-FROM SNOWHOUSE_IMPORT.PROD.JOB_ETL_V je
-WHERE je.DEPLOYMENT = '<DEPLOYMENT>'
-  AND je.ACCOUNT_ID = <ACCOUNT_ID>
+FROM SNOWHOUSE_IMPORT.<DEPLOYMENT>.JOB_ETL_V je
+WHERE je.ACCOUNT_ID = <ACCOUNT_ID>
   AND je.CREATED_ON >= DATEADD('day', -7, CURRENT_TIMESTAMP())
   AND je.DESCRIPTION ILIKE 'UPDATE%<CANDIDATE_TABLE>%'
   AND je.ERROR_CODE IS NULL
@@ -380,10 +427,22 @@ Score each candidate table:
 | Query volume > 100K/month | +2 | Frequently accessed |
 | Current latency > 1s | +2 | Significant improvement potential |
 | No DML activity | +2 | Purely read workload |
+| Wide table (50+ columns) | +3 | Ideal for IA's dynamic column access |
+| Wide table (20-50 columns) | +2 | Good fit for IA |
+| Dynamic column selection in queries | +2 | IA excels at this pattern |
+
+**Negative Scores:**
+| Criteria | Score | Description |
+|----------|-------|-------------|
+| Narrow table (<10 columns) | -2 | May not benefit from IA's wide-table optimization |
+| Warehouse cost sensitivity | -3 | IA requires always-on warehouse |
+| Intermittent/bursty access | -2 | May not justify always-on warehouse cost |
 
 **Score >= 8**: Strong IA candidate
 **Score 5-7**: Moderate candidate, needs validation
 **Score < 5**: May not benefit significantly
+
+**Important Consideration:** Interactive Analytics requires the warehouse to always be running. Discuss with customer whether they can justify always-on compute costs based on query frequency and latency requirements.
 
 ---
 
@@ -628,6 +687,21 @@ The dashboard will:
 | `SNOWHOUSE.PRODUCT.STATEMENT_TYPE` | Statement type classification | ID, STATEMENT_TYPE |
 | `SNOWHOUSE_IMPORT.PROD.JOB_ETL_V` | Query text and detailed metrics | ACCOUNT_ID, DEPLOYMENT, DESCRIPTION, TOTAL_DURATION, CREATED_ON |
 
+### Performance Optimization: Deployment-Specific Schemas
+
+**IMPORTANT:** When querying `SNOWHOUSE_IMPORT`, use the deployment-specific schema instead of `PROD` for better performance:
+
+| Instead of | Use |
+|------------|-----|
+| `SNOWHOUSE_IMPORT.PROD.JOB_ETL_V` | `SNOWHOUSE_IMPORT.<DEPLOYMENT>.JOB_ETL_V` |
+
+**Examples:**
+- For `va` deployment: `SNOWHOUSE_IMPORT.VA.JOB_ETL_V`
+- For `va2` deployment: `SNOWHOUSE_IMPORT.VA2.JOB_ETL_V`
+- For `prod1` deployment: `SNOWHOUSE_IMPORT.PROD1.JOB_ETL_V`
+
+This avoids scanning across all deployments and significantly improves query performance when you already know the target deployment from Step 2.
+
 ---
 
 ## Common Company Name Aliases
@@ -699,6 +773,15 @@ SELECT
 ---
 
 ## Changelog
+
+### v2.0.1 (2026-01-28)
+- **Improved:** Updated all SNOWHOUSE_IMPORT queries to use deployment-specific schemas (e.g., `SNOWHOUSE_IMPORT.VA`) instead of `SNOWHOUSE_IMPORT.PROD` for better query performance
+- **Added:** Performance optimization note in Key Snowhouse Tables Reference section
+- **Added:** Key Differences table comparing Hybrid Tables vs Interactive Analytics (warehouse requirements, table shape, cost model)
+- **Added:** Table width (column count) as IA scoring criterion - wide tables (50+ columns) score higher
+- **Added:** Step 6b to check table width for IA candidates
+- **Added:** Negative scoring for narrow tables and warehouse cost sensitivity in IA assessment
+- **Added:** Note about IA requiring always-on warehouse vs HT allowing warehouse shutdown
 
 ### v2.0.0 (2026-01-27)
 - **Fixed:** Account lookup query - removed invalid columns (CLOUD_NAME, REGION_NAME), use CREATED_ON
