@@ -142,3 +142,101 @@ def log_error(
         success=False,
         error=str(error),
     )
+
+
+class TelemetryEvents:
+    """Event type constants for OLTP Solution Advisor."""
+    APP_LAUNCH = "APP_LAUNCH"
+    RUN_DISCOVERY_ASSESSMENT = "RUN_DISCOVERY_ASSESSMENT"
+    TEMPLATE_PARSED = "TEMPLATE_PARSED"
+    REPORT_GENERATED = "REPORT_GENERATED"
+    CLARIFYING_QUESTIONS_GENERATED = "CLARIFYING_QUESTIONS_GENERATED"
+    ERROR_PARSE = "ERROR_PARSE"
+    ERROR_ASSESSMENT = "ERROR_ASSESSMENT"
+    ERROR_REPORT = "ERROR_REPORT"
+
+
+APP_NAME = "oltp-solution-advisor"
+
+
+def track_template_parse(
+    session: Session,
+    customer_name: str,
+    template_path: str,
+    fields_found: int,
+    fields_missing: int,
+    duration_ms: int | None = None,
+    account: str | None = None,
+) -> bool:
+    """Track template parsing event."""
+    return log_event(
+        session=session,
+        app_name=APP_NAME,
+        action_type=TelemetryEvents.TEMPLATE_PARSED,
+        account=account,
+        context={
+            "customer_name": customer_name,
+            "template_path": template_path,
+            "fields_found": fields_found,
+            "fields_missing": fields_missing,
+            "duration_ms": duration_ms,
+        },
+    )
+
+
+def track_discovery_assessment(
+    session: Session,
+    customer_name: str,
+    use_case: str,
+    recommendation: str,
+    alternative: str | None = None,
+    confidence: str = "Medium",
+    template_completeness: str = "PARTIAL",
+    missing_fields: list[str] | None = None,
+    scores: dict[str, int] | None = None,
+    duration_ms: int | None = None,
+    account: str | None = None,
+    use_case_link: str | None = None,
+) -> bool:
+    """Track full discovery assessment event."""
+    return log_event(
+        session=session,
+        app_name=APP_NAME,
+        action_type=TelemetryEvents.RUN_DISCOVERY_ASSESSMENT,
+        account=account,
+        recommendation=recommendation,
+        context={
+            "customer_name": customer_name,
+            "use_case": use_case,
+            "use_case_link": use_case_link,
+            "alternative": alternative,
+            "confidence": confidence,
+            "template_completeness": template_completeness,
+            "missing_fields": missing_fields or [],
+            "scores": scores or {},
+            "duration_ms": duration_ms,
+        },
+    )
+
+
+def track_report_generated(
+    session: Session,
+    customer_name: str,
+    recommendation: str,
+    output_path: str,
+    duration_ms: int | None = None,
+    account: str | None = None,
+) -> bool:
+    """Track report generation event."""
+    return log_event(
+        session=session,
+        app_name=APP_NAME,
+        action_type=TelemetryEvents.REPORT_GENERATED,
+        account=account,
+        recommendation=recommendation,
+        context={
+            "customer_name": customer_name,
+            "output_path": output_path,
+            "duration_ms": duration_ms,
+        },
+    )

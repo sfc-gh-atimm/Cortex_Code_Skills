@@ -1,6 +1,6 @@
 ---
 name: oltp-solution-advisor
-description: "Analyze OLTP discovery templates to recommend the best tool: Hybrid Tables, Snowflake Postgres, Interactive Tables, or Standard Tables. Use when: reviewing discovery templates, determining OLTP fit, preparing customer recommendations. Triggers: discovery template, OLTP discovery, hybrid tables fit, postgres fit, interactive tables fit."
+description: "Use when: analyzing OLTP discovery templates, recommending Hybrid Tables vs Postgres vs Interactive Tables. Triggers: discovery template, OLTP fit, product recommendation."
 ---
 
 # OLTP Solution Advisor
@@ -252,7 +252,7 @@ After parsing the template, check if Snowflake account information is available 
 Extract account name and deployment from template, then query Snowhouse:
 
 ```bash
-snow sql -c Snowhouse_PAT -q "
+snow sql -c Snowhouse -q "
 /* Find account ID from account name */
 SELECT ID as ACCOUNT_ID, DEPLOYMENT, NAME 
 FROM SNOWHOUSE.PRODUCT.ALL_LIVE_ACCOUNTS 
@@ -265,7 +265,7 @@ LIMIT 5;
 
 ##### 3.5.2 Query Pattern Analysis (Last 30 Days)
 ```bash
-snow sql -c Snowhouse_PAT -q "
+snow sql -c Snowhouse -q "
 /* Statement type distribution and latency */
 SELECT 
     st.STATEMENT_TYPE,
@@ -287,7 +287,7 @@ ORDER BY TOTAL_JOBS DESC;
 
 ##### 3.5.3 Calculate Read:Write Ratio
 ```bash
-snow sql -c Snowhouse_PAT -q "
+snow sql -c Snowhouse -q "
 SELECT 
     SUM(CASE WHEN st.STATEMENT_TYPE = 'SELECT' THEN jf.JOBS ELSE 0 END) as TOTAL_SELECTS,
     SUM(CASE WHEN st.STATEMENT_TYPE IN ('INSERT', 'UPDATE', 'DELETE', 'MERGE') THEN jf.JOBS ELSE 0 END) as TOTAL_DML,
@@ -305,7 +305,7 @@ WHERE jf.DEPLOYMENT = '<DEPLOYMENT>'
 
 ##### 3.5.4 Latency Distribution
 ```bash
-snow sql -c Snowhouse_PAT -q "
+snow sql -c Snowhouse -q "
 SELECT 
     CASE 
         WHEN jf.DURATION_TOTAL / NULLIF(jf.JOBS, 0) < 10 THEN '1_< 10ms'
@@ -955,7 +955,7 @@ This skill can optionally integrate with Snowhouse to validate discovery templat
 | `SNOWHOUSE.PRODUCT.ALL_LIVE_ACCOUNTS` | Account name to ID mapping |
 
 ### Connection Requirement
-Requires `Snowhouse_PAT` connection with access to SNOWHOUSE.PRODUCT schema.
+Requires `Snowhouse` connection with access to SNOWHOUSE.PRODUCT schema.
 
 ---
 
@@ -1044,7 +1044,7 @@ import snowflake.connector
 from snowflake.snowpark import Session
 
 # Connect to Snowhouse for telemetry logging
-conn = snowflake.connector.connect(connection_name=os.getenv("SNOWFLAKE_CONNECTION_NAME") or "Snowhouse_PAT")
+conn = snowflake.connector.connect(connection_name=os.getenv("SNOWFLAKE_CONNECTION_NAME") or "Snowhouse")
 session = Session.builder.configs({"connection": conn}).create()
 
 # Import the telemetry module
@@ -1120,7 +1120,7 @@ except Exception as e:
 For simple logging without the Python module:
 
 ```bash
-snow sql -c Snowhouse_PAT -q "
+snow sql -c Snowhouse -q "
 INSERT INTO AFE.PUBLIC_APP_STATE.APP_EVENTS (
     APP, APP_NAME, APP_VERSION, USER_NAME, ROLE_NAME, SNOWFLAKE_ACCOUNT,
     SALESFORCE_ACCOUNT_NAME,
