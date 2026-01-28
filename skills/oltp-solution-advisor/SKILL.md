@@ -1,6 +1,6 @@
 ---
 name: oltp-solution-advisor
-description: "Analyze OLTP discovery templates to recommend Hybrid Tables vs Postgres vs Interactive Tables. Triggers: discovery template, OLTP fit, product recommendation, should this customer use Hybrid Tables."
+description: "Analyze OLTP discovery templates to recommend Hybrid Tables and/or Postgres and/or Interactive Tables and/or Standard Tables. Triggers: discovery template, OLTP fit, product recommendation, should this customer use Hybrid Tables or Snowflake Postgres."
 ---
 
 # OLTP Solution Advisor
@@ -67,7 +67,7 @@ For analysis, ask for the path to the completed template file.
 | `<10ms`, `sub-10ms` | < 10ms |
 | `1-10ms`, `10-50ms`, `50-100ms` | Range in ms |
 
-**Important:** "less than 1 second" is a valid, specific requirement (sub-second latency).
+**Important:** "less than 1 second" or similar statements are a valid, specific requirement (sub-second latency).
 
 ### Step 3: Completeness Check
 
@@ -90,7 +90,9 @@ Use the scoring model (0-3 scale) to evaluate each product. Identify:
 
 ### Step 5: Log Telemetry (REQUIRED)
 
-**After completing the assessment, you MUST log telemetry.** Execute via `snow sql`:
+**After completing the assessment, you MUST log telemetry.**
+
+Execute via `snow sql`:
 
 ```bash
 snow sql -c Snowhouse -q "
@@ -119,14 +121,6 @@ SELECT
         \"confidence\": \"<High|Medium|Low>\",
         \"template_completeness\": \"<COMPLETE|PARTIAL>\",
         \"scores\": {\"hybrid_tables\": <HT>, \"postgres\": <PG>, \"interactive\": <IA>, \"standard\": <ST>},
-        \"cortex_request_id\": \"<CORTEX_REQUEST_ID>\",
-        \"coco_context\": {
-            \"session_id\": \"<CORTEX_SESSION_ID>\",
-            \"conversation_id\": \"<CORTEX_CONVERSATION_ID>\",
-            \"user_id\": \"<CORTEX_USER_ID>\",
-            \"account\": \"<CORTEX_ACCOUNT>\",
-            \"model\": \"<CORTEX_MODEL>\"
-        },
         \"assessment_details\": {
             \"template_path\": \"<TEMPLATE_FILE_PATH>\",
             \"missing_fields\": [<LIST_OF_MISSING_FIELDS>],
@@ -162,8 +156,8 @@ Replace `<PLACEHOLDERS>` with actual values from the assessment.
 
 | Rank | Product | Score | Key Fit Reasons | Primary Concerns |
 |------|---------|-------|-----------------|------------------|
-| 1st | [PRODUCT] | [X/15] | [reasons] | [caveats] |
-| 2nd | [PRODUCT] | [X/15] | [reasons] | [caveats] |
+| 1st | [PRODUCT] | [X/20] | [reasons] | [caveats] |
+| 2nd | [PRODUCT] | [X/20] | [reasons] | [caveats] |
 
 **Confidence Level:** [High/Medium/Low]
 **Quick Take:** [1-2 sentence summary]
@@ -196,14 +190,17 @@ Include:
 
 ```markdown
 ## Helpful Unistore References
+- [Hybrid Tables Documentation](https://docs.snowflake.com/en/user-guide/tables-hybrid)
 - [#unistore-workload](https://snowflake.enterprise.slack.com/archives/C02GHK5EN1Z)
 - [#support-unistore](https://snowflake.enterprise.slack.com/archives/C02R14PHAC9)
 - Tag: `@unistore-gtm-team`
 
 ## Helpful Postgres References
+- [Snowflake Postgres Documentation](https://docs.snowflake.com/en/user-guide/snowflake-postgres)
 - [#ask-snowflake-postgres](https://snowflake.enterprise.slack.com/archives/C08V01BHQBX)
 
 ## Helpful Interactive Analytics References
+- [Interactive Tables Documentation](https://docs.snowflake.com/en/user-guide/tables-interactive)
 - Interactive Compass page
 ```
 

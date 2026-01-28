@@ -3,16 +3,17 @@
 ## Hybrid Tables - When to Recommend
 
 **Strong Indicators:**
-- P50 latency < 50ms required
+- P50 latency < 100ms required
 - Point lookups dominate workload
-- Single-row INSERT/UPDATE/DELETE operations
+- Single-row or small batch INSERT/UPDATE/DELETE operations
 - Need for elastic compute during spikes
 - Primary keys are well-defined
 - No Postgres-specific requirements
 
 **Caution Flags:**
+- P50 latency < 30ms
 - Heavy bulk write operations per day
-- Complex stored procedures
+- Complex stored procedures or functions
 - Customer strongly prefers Postgres
 - Analytical aggregations are primary workload
 
@@ -22,6 +23,7 @@
 
 **Strong Indicators:**
 - Customer is Postgres expert
+- P50 latency < 20ms required
 - Migrating from existing Postgres
 - Postgres extensions needed (PostGIS, etc.)
 - Complex Postgres stored procedures
@@ -32,7 +34,9 @@
 - Need for elastic compute
 - Tight Snowflake ecosystem integration required
 - Customer wants "all-Snowflake" architecture
+- Customer does not want or have ETL tools
 - Scale requirements exceed Postgres limits
+- Customer has low threshold for lag between Postgres and data loading to Snowflake
 
 ---
 
@@ -48,7 +52,7 @@
 **Caution Flags:**
 - Sub-10ms latency required
 - Requires significant DML operations
-- True transactional requirements
+- True transactional requirements inlcuding ACID compliance
 - Single-row lookups dominate
 
 ---
@@ -61,6 +65,7 @@
 - Heavy aggregations and joins
 - Bulk write/update patterns
 - Cost optimization is primary concern
+- Snowflake Cortex
 
 **Caution Flags:**
 - Real-time requirements
@@ -85,18 +90,18 @@
 | **Sub-second Analytics** | ~ Limited | ~ Limited | ✓ Optimized | ✗ Seconds+ |
 | **Bulk Write Performance** | ✗ Slower | ~ Moderate | ✗ Read-focused | ✓ Optimized |
 | **Cost Efficiency (reads)** | ~ Moderate | ~ Low | ✓ Low | ✓ Moderate |
-| **Cost Efficiency (writes)** | ~ Moderate | ~ Moderate | ✗ N/A | ✓ Low |
+| **Cost Efficiency (writes)** | ~ Moderate | ~ Low | ✗ N/A | ✓ Low |
 
 ---
 
 ## Read:Write Ratio Scoring
 
-| Read:Write Ratio | Hybrid Tables | Interactive Analytics | Standard Tables |
-|------------------|---------------|----------------------|-----------------|
-| > 10,000:1 | 0 (overkill for writes) | 3 (ideal) | 2 (acceptable) |
-| 1,000:1 - 10,000:1 | 1 (consider if latency critical) | 3 (ideal) | 2 (acceptable) |
-| 100:1 - 1,000:1 | 2 (good fit) | 2 (acceptable) | 2 (acceptable) |
-| < 100:1 | 3 (designed for this) | 0 (too many writes) | 1 (batch writes only) |
+| Read:Write Ratio | Hybrid Tables | Snowflake Postgres | Interactive Analytics | Standard Tables |
+|------------------|---------------|--------------------|-----------------------|-----------------|
+| > 10,000:1 | 0 (overkill for writes) | 0 (overkill for writes) | 3 (ideal) | 2 (acceptable) |
+| 1,000:1 - 10,000:1 | 1 (consider if latency critical) | 1 (consider if PG required) | 3 (ideal) | 2 (acceptable) |
+| 100:1 - 1,000:1 | 2 (good fit) | 2 (good fit) | 2 (acceptable) | 2 (acceptable) |
+| < 100:1 | 3 (designed for this) | 3 (designed for this) | 0 (too many writes) | 1 (batch writes only) |
 
 ---
 
