@@ -1,12 +1,12 @@
 ---
 name: unistore-propensity
-description: "Analyze customer workloads via Snowhouse to identify tables/queries suitable for conversion to Hybrid Tables or Interactive Analytics. Use when: prospecting for Unistore opportunities, identifying conversion candidates, analyzing customer query patterns. Triggers: customer workload analysis, hybrid table candidates, interactive analytics candidates, conversion opportunities, Unistore prospecting."
+description: "Analyze customer workloads via Snowhouse to identify tables/queries suitable for conversion to Hybrid Tables, Interactive Analytics, or Snowflake Postgres. Use when: prospecting for Unistore opportunities, identifying conversion candidates, analyzing customer query patterns, detecting Postgres data flows. Triggers: customer workload analysis, hybrid table candidates, interactive analytics candidates, snowflake postgres, postgres migration, conversion opportunities, Unistore prospecting."
 ---
 
 # Unistore Propensity
 
 ## Overview
-This skill analyzes a customer's Snowhouse telemetry data (last 30 days) to identify tables and query patterns that would be strong candidates for conversion to Hybrid Tables or Interactive Analytics. It takes customer identifying information (name, account locator, or deployment) and produces actionable recommendations.
+This skill analyzes a customer's Snowhouse telemetry data (last 30 days) to identify tables and query patterns that would be strong candidates for conversion to Hybrid Tables, Interactive Analytics, or Snowflake Postgres. It takes customer identifying information (name, account locator, or deployment) and produces actionable recommendations.
 
 ## Prerequisites
 - Snowhouse connection configured (typically `Snowhouse` with PAT authentication)
@@ -19,17 +19,20 @@ This skill analyzes a customer's Snowhouse telemetry data (last 30 days) to iden
 |---------|----------|----------------|
 | **Hybrid Tables** | True OLTP workloads with sub-10ms point lookups, high single-row DML, transactional consistency. Warehouse can be shut down. | High UPDATE/DELETE %, point lookups, parameterized queries, sub-10ms latency requirements |
 | **Interactive Analytics** | Read-heavy analytical workloads on wide tables requiring sub-second (not sub-10ms) response times with dynamic column access | 99%+ reads, wide tables (many columns), dashboard/BI patterns, sub-second latency needs, dynamic column selection |
+| **Snowflake Postgres** | PostgreSQL-compatible workloads requiring full Postgres wire protocol. Consolidate external Postgres instances into Snowflake. | Existing Postgres data pipelines (inbound ETL from AWS RDS, Aurora, etc.), outbound data feeds to Postgres destinations, pg_* table patterns, CDC from Postgres sources |
 
-### Key Differences: Hybrid Tables vs Interactive Analytics
+### Key Differences: Hybrid Tables vs Interactive Analytics vs Snowflake Postgres
 
-| Consideration | Hybrid Tables | Interactive Analytics |
-|---------------|---------------|----------------------|
-| **Warehouse Requirement** | Can operate with warehouse shut down | Warehouse must always be running |
-| **Best Table Shape** | Narrow tables with few columns | Wide tables with many columns |
-| **Column Access Pattern** | Known, fixed columns in queries | Dynamic access to any column |
-| **Latency Target** | Sub-10ms | Sub-second (100ms-1s) |
-| **Write Pattern** | High single-row DML | Primarily read-only |
-| **Cost Model** | Pay per DML operation | Pay for always-on warehouse |
+| Consideration | Hybrid Tables | Interactive Analytics | Snowflake Postgres |
+|---------------|---------------|----------------------|-------------------|
+| **Warehouse Requirement** | Can operate with warehouse shut down | Warehouse must always be running | Dedicated Postgres compute |
+| **Best Table Shape** | Narrow tables with few columns | Wide tables with many columns | Any Postgres-compatible schema |
+| **Column Access Pattern** | Known, fixed columns in queries | Dynamic access to any column | Standard SQL/Postgres protocol |
+| **Latency Target** | Sub-10ms | Sub-second (100ms-1s) | Sub-second OLTP |
+| **Write Pattern** | High single-row DML | Primarily read-only | Full ACID DML |
+| **Cost Model** | Pay per DML operation | Pay for always-on warehouse | Pay for compute + storage |
+| **Best Use Case** | Native Snowflake OLTP | BI/Dashboard acceleration | Postgres app consolidation |
+| **Protocol** | Snowflake native | Snowflake native | Postgres wire protocol |
 
 ---
 
@@ -369,6 +372,197 @@ ORDER BY COLUMN_COUNT DESC;
 
 ---
 
+### Step 6c: Detect Snowflake Postgres Candidates (Inbound Postgres Data)
+Identify patterns indicating data flowing INTO Snowflake from external Postgres sources (AWS RDS, Aurora, self-hosted Postgres, etc.):
+
+```bash
+snow sql -c Snowhouse -q "
+-- Detect INBOUND Postgres data patterns (CDC/ETL replicating from external Postgres)
+-- Using deployment-specific schema for performance
+WITH postgres_patterns AS (
+    SELECT 
+        CASE 
+            WHEN je.DESCRIPTION ILIKE '%postgres%' THEN 'POSTGRES_DIRECT'
+            WHEN je.DESCRIPTION ILIKE '%pg_%' AND je.DESCRIPTION NOT ILIKE '%page%' THEN 'PG_PREFIX_TABLE'
+            WHEN je.DESCRIPTION ILIKE '%_rds_%' OR je.DESCRIPTION ILIKE '%rds.%' THEN 'AWS_RDS'
+            WHEN je.DESCRIPTION ILIKE '%aurora%' THEN 'AWS_AURORA'
+            WHEN je.DESCRIPTION ILIKE '%fivetran%postgres%' OR (je.DESCRIPTION ILIKE '%fivetran%' AND je.DESCRIPTION ILIKE '%pg_%') THEN 'FIVETRAN_POSTGRES'
+            WHEN je.DESCRIPTION ILIKE '%airbyte%postgres%' OR (je.DESCRIPTION ILIKE '%airbyte%' AND je.DESCRIPTION ILIKE '%pg_%') THEN 'AIRBYTE_POSTGRES'
+            WHEN je.DESCRIPTION ILIKE '%stitch%postgres%' THEN 'STITCH_POSTGRES'
+            WHEN je.DESCRIPTION ILIKE '%hvr%' AND (je.DESCRIPTION ILIKE '%pg_%' OR je.DESCRIPTION ILIKE '%postgres%') THEN 'HVR_POSTGRES'
+            WHEN je.DESCRIPTION ILIKE '%debezium%' THEN 'DEBEZIUM_CDC'
+            WHEN je.DESCRIPTION ILIKE '%matillion%' AND je.DESCRIPTION ILIKE '%postgres%' THEN 'MATILLION_POSTGRES'
+            ELSE 'OTHER_POSTGRES'
+        END as SOURCE_PATTERN,
+        je.DESCRIPTION
+    FROM SNOWHOUSE_IMPORT.<DEPLOYMENT>.JOB_ETL_V je
+    WHERE je.ACCOUNT_ID = <ACCOUNT_ID>
+      AND je.CREATED_ON >= DATEADD('day', -<DAYS>, CURRENT_TIMESTAMP())
+      AND je.ERROR_CODE IS NULL
+      AND (je.DESCRIPTION ILIKE '%postgres%' 
+           OR (je.DESCRIPTION ILIKE '%pg_%' AND je.DESCRIPTION NOT ILIKE '%page%')
+           OR je.DESCRIPTION ILIKE '%_rds_%'
+           OR je.DESCRIPTION ILIKE '%rds.%'
+           OR je.DESCRIPTION ILIKE '%aurora%'
+           OR je.DESCRIPTION ILIKE '%debezium%')
+      AND (je.DESCRIPTION ILIKE 'INSERT%' OR je.DESCRIPTION ILIKE 'MERGE%' OR je.DESCRIPTION ILIKE 'COPY INTO%')
+)
+SELECT 
+    SOURCE_PATTERN,
+    COUNT(*) as INBOUND_OPS,
+    'INBOUND - Data flowing INTO Snowflake from Postgres source' as FLOW_DIRECTION
+FROM postgres_patterns
+GROUP BY SOURCE_PATTERN
+ORDER BY INBOUND_OPS DESC;
+"
+```
+
+### Step 6d: Detect Snowflake Postgres Candidates (Outbound Postgres Data)
+Identify patterns indicating data flowing OUT of Snowflake to external Postgres destinations:
+
+```bash
+snow sql -c Snowhouse -q "
+-- Detect OUTBOUND data patterns (data being exported that could go to Postgres)
+-- Using deployment-specific schema for performance
+WITH outbound_patterns AS (
+    SELECT 
+        CASE 
+            WHEN je.DESCRIPTION ILIKE 'COPY INTO%@%postgres%' THEN 'COPY_TO_POSTGRES_STAGE'
+            WHEN je.DESCRIPTION ILIKE 'COPY INTO%@%pg_%' THEN 'COPY_TO_PG_STAGE'
+            WHEN je.DESCRIPTION ILIKE 'COPY INTO%@%rds%' THEN 'COPY_TO_RDS_STAGE'
+            WHEN je.DESCRIPTION ILIKE 'COPY INTO%@%' AND je.DESCRIPTION ILIKE '%export%' THEN 'COPY_TO_EXPORT_STAGE'
+            WHEN je.DESCRIPTION ILIKE 'COPY INTO%s3://%' AND (je.DESCRIPTION ILIKE '%postgres%' OR je.DESCRIPTION ILIKE '%pg_%' OR je.DESCRIPTION ILIKE '%rds%') THEN 'S3_TO_POSTGRES'
+            WHEN je.DESCRIPTION ILIKE '%UNLOAD%' AND (je.DESCRIPTION ILIKE '%postgres%' OR je.DESCRIPTION ILIKE '%pg_%') THEN 'UNLOAD_TO_POSTGRES'
+            WHEN je.DESCRIPTION ILIKE 'COPY INTO%s3://%' THEN 'S3_EXPORT_GENERAL'
+            WHEN je.DESCRIPTION ILIKE 'COPY INTO%azure://%' THEN 'AZURE_EXPORT_GENERAL'
+            WHEN je.DESCRIPTION ILIKE 'COPY INTO%gcs://%' THEN 'GCS_EXPORT_GENERAL'
+            WHEN je.DESCRIPTION ILIKE 'COPY INTO%@%' AND je.DESCRIPTION NOT ILIKE '%FROM%' THEN 'STAGE_EXPORT'
+        END as EXPORT_PATTERN,
+        je.DESCRIPTION,
+        je.DATABASE_NAME
+    FROM SNOWHOUSE_IMPORT.<DEPLOYMENT>.JOB_ETL_V je
+    WHERE je.ACCOUNT_ID = <ACCOUNT_ID>
+      AND je.CREATED_ON >= DATEADD('day', -<DAYS>, CURRENT_TIMESTAMP())
+      AND je.ERROR_CODE IS NULL
+      AND (je.DESCRIPTION ILIKE 'COPY INTO%@%'
+           OR je.DESCRIPTION ILIKE 'COPY INTO%s3://%'
+           OR je.DESCRIPTION ILIKE 'COPY INTO%azure://%'
+           OR je.DESCRIPTION ILIKE 'COPY INTO%gcs://%'
+           OR je.DESCRIPTION ILIKE '%UNLOAD%')
+      AND je.DESCRIPTION NOT ILIKE '%FROM @%'  -- Exclude COPY FROM (inbound)
+)
+SELECT 
+    EXPORT_PATTERN,
+    COUNT(*) as OUTBOUND_OPS,
+    'OUTBOUND - Data flowing OUT of Snowflake (potential Postgres destination)' as FLOW_DIRECTION
+FROM outbound_patterns
+WHERE EXPORT_PATTERN IS NOT NULL
+GROUP BY EXPORT_PATTERN
+ORDER BY OUTBOUND_OPS DESC;
+"
+```
+
+### Step 6e: Identify Tables with Postgres Data Lineage
+Find tables that are targets of Postgres-sourced ETL/CDC:
+
+```bash
+snow sql -c Snowhouse -q "
+-- Tables receiving data from Postgres sources (HVR, Fivetran, Airbyte patterns)
+-- Using deployment-specific schema for performance
+WITH postgres_target_tables AS (
+    SELECT 
+        CASE 
+            WHEN je.DESCRIPTION ILIKE 'INSERT INTO%' THEN 
+                SPLIT_PART(SPLIT_PART(je.DESCRIPTION, 'INSERT INTO ', 2), ' ', 1)
+            WHEN je.DESCRIPTION ILIKE 'MERGE INTO%' THEN
+                SPLIT_PART(SPLIT_PART(je.DESCRIPTION, 'MERGE INTO ', 2), ' ', 1)
+            WHEN je.DESCRIPTION ILIKE 'COPY INTO%' AND je.DESCRIPTION ILIKE '%FROM @%' THEN
+                SPLIT_PART(SPLIT_PART(je.DESCRIPTION, 'COPY INTO ', 2), ' ', 1)
+        END as TABLE_NAME,
+        CASE 
+            WHEN je.DESCRIPTION ILIKE '%fivetran%' THEN 'FIVETRAN'
+            WHEN je.DESCRIPTION ILIKE '%airbyte%' THEN 'AIRBYTE'
+            WHEN je.DESCRIPTION ILIKE '%hvr%' THEN 'HVR'
+            WHEN je.DESCRIPTION ILIKE '%stitch%' THEN 'STITCH'
+            WHEN je.DESCRIPTION ILIKE '%debezium%' THEN 'DEBEZIUM'
+            WHEN je.DESCRIPTION ILIKE '%matillion%' THEN 'MATILLION'
+            WHEN je.DESCRIPTION ILIKE '%postgres%' OR je.DESCRIPTION ILIKE '%pg_%' THEN 'POSTGRES_DIRECT'
+            ELSE 'OTHER_ETL'
+        END as ETL_TOOL,
+        je.TOTAL_DURATION
+    FROM SNOWHOUSE_IMPORT.<DEPLOYMENT>.JOB_ETL_V je
+    WHERE je.ACCOUNT_ID = <ACCOUNT_ID>
+      AND je.CREATED_ON >= DATEADD('day', -<DAYS>, CURRENT_TIMESTAMP())
+      AND je.ERROR_CODE IS NULL
+      AND (je.DESCRIPTION ILIKE '%postgres%' 
+           OR je.DESCRIPTION ILIKE '%pg_%'
+           OR je.DESCRIPTION ILIKE '%rds%'
+           OR je.DESCRIPTION ILIKE '%fivetran%'
+           OR je.DESCRIPTION ILIKE '%airbyte%'
+           OR je.DESCRIPTION ILIKE '%hvr%'
+           OR je.DESCRIPTION ILIKE '%debezium%')
+      AND (je.DESCRIPTION ILIKE 'INSERT%' OR je.DESCRIPTION ILIKE 'MERGE%' OR je.DESCRIPTION ILIKE 'COPY INTO%FROM%')
+)
+SELECT 
+    TABLE_NAME,
+    ETL_TOOL,
+    COUNT(*) as LOAD_OPS,
+    ROUND(AVG(TOTAL_DURATION), 2) as AVG_LOAD_MS
+FROM postgres_target_tables
+WHERE TABLE_NAME IS NOT NULL 
+  AND LENGTH(TABLE_NAME) > 3
+  AND TABLE_NAME NOT ILIKE '%TEMP%'
+  AND TABLE_NAME NOT ILIKE '%STG%'
+GROUP BY TABLE_NAME, ETL_TOOL
+HAVING LOAD_OPS >= 100
+ORDER BY LOAD_OPS DESC
+LIMIT 30;
+"
+```
+
+### Step 6f: Identify Postgres Data Export Destinations
+Find patterns where data is being exported out of Snowflake (potential Postgres destinations):
+
+```bash
+snow sql -c Snowhouse -q "
+-- Tables being exported (potential candidates for Snowflake Postgres consolidation)
+-- Using deployment-specific schema for performance
+WITH export_sources AS (
+    SELECT 
+        REGEXP_SUBSTR(je.DESCRIPTION, 'FROM ([A-Za-z0-9_\\.]+)', 1, 1, 'e') as SOURCE_TABLE,
+        CASE 
+            WHEN je.DESCRIPTION ILIKE '%@%postgres%' OR je.DESCRIPTION ILIKE '%@%pg_%' THEN 'POSTGRES_STAGE'
+            WHEN je.DESCRIPTION ILIKE '%s3://%' THEN 'S3'
+            WHEN je.DESCRIPTION ILIKE '%azure://%' THEN 'AZURE'
+            WHEN je.DESCRIPTION ILIKE '%gcs://%' THEN 'GCS'
+            WHEN je.DESCRIPTION ILIKE '%@%export%' THEN 'EXPORT_STAGE'
+            ELSE 'OTHER_STAGE'
+        END as EXPORT_DEST,
+        je.TOTAL_DURATION
+    FROM SNOWHOUSE_IMPORT.<DEPLOYMENT>.JOB_ETL_V je
+    WHERE je.ACCOUNT_ID = <ACCOUNT_ID>
+      AND je.CREATED_ON >= DATEADD('day', -<DAYS>, CURRENT_TIMESTAMP())
+      AND je.ERROR_CODE IS NULL
+      AND je.DESCRIPTION ILIKE 'COPY INTO%@%'
+      AND je.DESCRIPTION NOT ILIKE '%FROM @%'  -- Only exports, not imports
+      AND je.DESCRIPTION ILIKE '%FROM %'
+)
+SELECT 
+    SOURCE_TABLE,
+    EXPORT_DEST,
+    COUNT(*) as EXPORT_OPS,
+    ROUND(AVG(TOTAL_DURATION), 2) as AVG_EXPORT_MS
+FROM export_sources
+WHERE SOURCE_TABLE IS NOT NULL
+GROUP BY SOURCE_TABLE, EXPORT_DEST
+HAVING EXPORT_OPS >= 50
+ORDER BY EXPORT_OPS DESC
+LIMIT 25;
+"
+```
+
+---
+
 ### Step 7: Sample Query Text for Top Candidates
 Sample actual query text to validate patterns:
 
@@ -444,6 +638,41 @@ Score each candidate table:
 
 **Important Consideration:** Interactive Analytics requires the warehouse to always be running. Discuss with customer whether they can justify always-on compute costs based on query frequency and latency requirements.
 
+### Snowflake Postgres Candidates
+Score based on Postgres data flow patterns:
+
+| Criteria | Score | Description |
+|----------|-------|-------------|
+| **Inbound Indicators** | | |
+| High volume Postgres CDC (Fivetran/Airbyte/HVR/Debezium) | +4 | Active Postgres replication pipeline |
+| Tables with pg_* or *_rds_* naming patterns | +3 | Postgres-sourced tables |
+| COPY INTO from stages with postgres/rds naming | +2 | Direct Postgres data loads |
+| Multiple ETL tools replicating from Postgres | +3 | Complex Postgres ecosystem |
+| **Outbound Indicators** | | |
+| COPY INTO to stages with postgres/rds naming | +4 | Data exported to Postgres targets |
+| High volume S3/Azure/GCS exports with reverse-ETL patterns | +3 | Potential Postgres destinations |
+| Frequent scheduled exports (TASK-driven COPY INTO) | +2 | Automated data feeds |
+| **Consolidation Signals** | | |
+| Both inbound AND outbound Postgres patterns | +5 | Strong consolidation opportunity |
+| Customer has known external Postgres instances (AWS RDS, Aurora) | +3 | Known Postgres estate |
+| ETL complexity (3+ different tools involved) | +2 | Simplification opportunity |
+
+**Negative Scores:**
+| Criteria | Score | Description |
+|----------|-------|-------------|
+| No Postgres-related patterns detected | -10 | Not a Snowflake Postgres candidate |
+| Low volume (<1000 ops/month) | -3 | May not justify migration effort |
+| Postgres patterns only in staging/temp tables | -2 | Not production workload |
+
+**Score >= 10**: Strong Snowflake Postgres candidate - Customer has significant Postgres data flows
+**Score 5-9**: Moderate candidate - Worth exploring Postgres consolidation
+**Score < 5**: Low priority - Limited Postgres ecosystem
+
+**Conversation Points for Snowflake Postgres:**
+1. "You have [X] operations moving data from Postgres sources into Snowflake. With Snowflake Postgres, you could consolidate this into a single platform."
+2. "Your data export patterns suggest you're feeding external Postgres databases. Snowflake Postgres could serve as the unified destination."
+3. "The ETL complexity (using [tools]) to move Postgres data could be simplified with native Snowflake Postgres."
+
 ---
 
 ## Output Options
@@ -466,7 +695,10 @@ analysis_output/<customer_name>/
 ├── update_patterns.parquet     # ETL vs OLTP classification
 ├── hybrid_candidates.parquet   # HT candidate tables with scores
 ├── ia_candidates.parquet       # IA candidate tables with scores
-└── delete_activity.parquet     # DELETE activity by table
+├── delete_activity.parquet     # DELETE activity by table
+├── postgres_inbound.parquet    # Inbound Postgres data patterns
+├── postgres_outbound.parquet   # Outbound data export patterns
+└── postgres_tables.parquet     # Tables with Postgres data lineage
 ```
 
 **Python code to save outputs:**
@@ -490,7 +722,10 @@ metadata = {
     "generated_at": datetime.now().isoformat(),
     "total_queries": <TOTAL>,
     "hybrid_candidates_count": len(hybrid_candidates_df),
-    "ia_candidates_count": len(ia_candidates_df)
+    "ia_candidates_count": len(ia_candidates_df),
+    "postgres_inbound_ops": postgres_inbound_df['INBOUND_OPS'].sum() if 'postgres_inbound_df' in dir() else 0,
+    "postgres_outbound_ops": postgres_outbound_df['OUTBOUND_OPS'].sum() if 'postgres_outbound_df' in dir() else 0,
+    "postgres_candidate": True if (postgres_inbound_df['INBOUND_OPS'].sum() if 'postgres_inbound_df' in dir() else 0) > 1000 else False
 }
 with open(output_folder / "analysis_metadata.json", "w") as f:
     json.dump(metadata, f, indent=2)
@@ -502,6 +737,14 @@ update_patterns_df.to_parquet(output_folder / "update_patterns.parquet")
 hybrid_candidates_df.to_parquet(output_folder / "hybrid_candidates.parquet")
 ia_candidates_df.to_parquet(output_folder / "ia_candidates.parquet")
 delete_activity_df.to_parquet(output_folder / "delete_activity.parquet")
+
+# Save Postgres data flow files (if available)
+if 'postgres_inbound_df' in dir() and not postgres_inbound_df.empty:
+    postgres_inbound_df.to_parquet(output_folder / "postgres_inbound.parquet")
+if 'postgres_outbound_df' in dir() and not postgres_outbound_df.empty:
+    postgres_outbound_df.to_parquet(output_folder / "postgres_outbound.parquet")
+if 'postgres_tables_df' in dir() and not postgres_tables_df.empty:
+    postgres_tables_df.to_parquet(output_folder / "postgres_tables.parquet")
 
 print(f"Analysis saved to: {output_folder}")
 ```
@@ -524,6 +767,7 @@ The dashboard will:
 - 🎯 **Hybrid Tables**: Scatter plot (volume vs latency), candidate ranking
 - 📊 **Interactive Analytics**: Read-heavy table analysis with fit scoring
 - 🔍 **UPDATE Patterns**: ETL vs OLTP classification pie chart
+- 🐘 **Snowflake Postgres**: Inbound/outbound Postgres data flow analysis
 - 📋 **Summary**: Executive overview with recommendations
 
 **Dashboard Location:** `skills/unistore-propensity/dashboard/app.py`
@@ -644,6 +888,35 @@ The dashboard will:
 
 ---
 
+## Snowflake Postgres Assessment
+
+### Postgres Data Flow Summary
+
+| Flow Direction | Pattern Type | Operations | Assessment |
+|----------------|--------------|------------|------------|
+| INBOUND | [FIVETRAN_POSTGRES/HVR/DEBEZIUM/etc] | [X] | [Strong/Moderate/Low] |
+| OUTBOUND | [S3_EXPORT/STAGE_EXPORT/etc] | [X] | [Strong/Moderate/Low] |
+
+### Top Tables with Postgres Lineage
+
+| Table | ETL Tool | Load Operations | Avg Load (ms) |
+|-------|----------|-----------------|---------------|
+| [TABLE_1] | [FIVETRAN/HVR/etc] | [X] | [X]ms |
+| [TABLE_2] | [AIRBYTE/DEBEZIUM/etc] | [X] | [X]ms |
+
+### Snowflake Postgres Recommendation
+
+**Score: [X/16]** — [STRONG/MODERATE/LOW] candidate
+
+[If Strong]:
+Customer has significant Postgres data flowing into and/or out of Snowflake. Snowflake Postgres could consolidate external Postgres instances and simplify ETL pipelines.
+
+**Conversation Points:**
+- "You have [X] operations moving data from Postgres sources. Snowflake Postgres could consolidate this."
+- "Your data export patterns suggest feeding external databases. Consider Snowflake Postgres as unified endpoint."
+
+---
+
 ## Next Steps
 
 ### For Hybrid Table Candidates:
@@ -675,6 +948,10 @@ The dashboard will:
 - User asks "prospect [customer] for Hybrid Tables"
 - User asks "what queries would benefit from sub-10ms latency"
 - User mentions "conversion candidates" or "workload analysis"
+- User asks "is [customer] a good fit for Snowflake Postgres"
+- User asks "detect Postgres data flows for [customer]"
+- User asks "find customers with Postgres ETL patterns"
+- User mentions "Postgres consolidation" or "Postgres migration"
 
 ---
 
@@ -773,6 +1050,22 @@ SELECT
 ---
 
 ## Changelog
+
+### v2.2.0 (2026-01-28)
+- **Added:** Snowflake Postgres product assessment to identify consolidation opportunities
+- **Added:** Step 6c - Detect INBOUND Postgres data flows (CDC/ETL from AWS RDS, Aurora, external Postgres via Fivetran, Airbyte, HVR, Debezium, Stitch, Matillion)
+- **Added:** Step 6d - Detect OUTBOUND data exports (potential Postgres destinations via COPY INTO, UNLOAD)
+- **Added:** Step 6e - Identify tables with Postgres data lineage (receiving data from Postgres sources)
+- **Added:** Step 6f - Identify tables being exported (potential reverse-ETL to Postgres)
+- **Added:** Snowflake Postgres scoring criteria in Decision Framework
+- **Added:** New dashboard tab "🐘 Snowflake Postgres" with inbound/outbound flow analysis
+- **Added:** Postgres assessment section in markdown report export
+- **Added:** Output files: postgres_inbound.parquet, postgres_outbound.parquet, postgres_tables.parquet
+- **Added:** Metadata fields: postgres_inbound_ops, postgres_outbound_ops, postgres_candidate
+- **Added:** Trigger keywords for Snowflake Postgres detection queries
+- **Updated:** Products Evaluated table to include Snowflake Postgres
+- **Updated:** Key Differences table to compare all three products (HT vs IA vs SF Postgres)
+- **Updated:** Dashboard version to 2.2
 
 ### v2.0.1 (2026-01-28)
 - **Improved:** Updated all SNOWHOUSE_IMPORT queries to use deployment-specific schemas (e.g., `SNOWHOUSE_IMPORT.VA`) instead of `SNOWHOUSE_IMPORT.PROD` for better query performance

@@ -81,7 +81,8 @@ def load_analysis(folder_path: str) -> dict:
             data["metadata"] = json.load(f)
     
     for data_file in ["daily_activity", "statement_summary", "update_patterns", 
-                         "hybrid_candidates", "ia_candidates", "delete_activity"]:
+                         "hybrid_candidates", "ia_candidates", "delete_activity",
+                         "postgres_inbound", "postgres_outbound", "postgres_tables"]:
         csv_path = folder / f"{data_file}.csv"
         parquet_path = folder / f"{data_file}.parquet"
         if csv_path.exists():
@@ -182,11 +183,12 @@ def track_tab(tab_name: str):
                 deployment=data["metadata"].get("deployment"),
             )
 
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
     "📈 Daily Timeline", 
     "🎯 Hybrid Tables", 
     "📊 Interactive Analytics",
     "🔍 UPDATE Patterns",
+    "🐘 Snowflake Postgres",
     "📋 Summary"
 ])
 
@@ -445,6 +447,7 @@ def generate_markdown_report(data: dict) -> str:
     lines.append("")
     lines.append(f"- **Hybrid Table Candidates:** {meta.get('hybrid_candidates_count', 0)}")
     lines.append(f"- **Interactive Analytics Candidates:** {meta.get('ia_candidates_count', 0)}")
+    lines.append(f"- **Snowflake Postgres Candidate:** {'Yes' if meta.get('postgres_candidate', False) else 'No'}")
     lines.append("")
     
     if "statement_summary" in data and not data["statement_summary"].empty:
@@ -547,14 +550,238 @@ def generate_markdown_report(data: dict) -> str:
         lines.append("_No strong Interactive Analytics candidates identified._")
         lines.append("")
     
+    has_postgres_data = any(key in data for key in ["postgres_inbound", "postgres_outbound", "postgres_tables"])
+    if has_postgres_data:
+        lines.append("---")
+        lines.append("")
+        lines.append("## 🐘 Snowflake Postgres Assessment")
+        lines.append("")
+        
+        inbound_ops = data["postgres_inbound"]["INBOUND_OPS"].sum() if "postgres_inbound" in data and not data["postgres_inbound"].empty else 0
+        outbound_ops = data["postgres_outbound"]["OUTBOUND_OPS"].sum() if "postgres_outbound" in data and not data["postgres_outbound"].empty else 0
+        postgres_tables_count = len(data["postgres_tables"]) if "postgres_tables" in data and not data["postgres_tables"].empty else 0
+        
+        lines.append(f"- **Inbound Postgres Operations:** {inbound_ops:,}")
+        lines.append(f"- **Outbound Export Operations:** {outbound_ops:,}")
+        lines.append(f"- **Postgres-Sourced Tables:** {postgres_tables_count}")
+        lines.append("")
+        
+        if "postgres_inbound" in data and not data["postgres_inbound"].empty:
+            lines.append("### Inbound Data Sources (Postgres → Snowflake)")
+            lines.append("")
+            lines.append("| Source Pattern | Operations | Flow Direction |")
+            lines.append("|----------------|------------|----------------|")
+            for _, row in data["postgres_inbound"].iterrows():
+                lines.append(f"| {row['SOURCE_PATTERN']} | {row['INBOUND_OPS']:,} | Inbound |")
+            lines.append("")
+        
+        if "postgres_outbound" in data and not data["postgres_outbound"].empty:
+            lines.append("### Outbound Data Exports (Snowflake → External)")
+            lines.append("")
+            lines.append("| Export Pattern | Operations |")
+            lines.append("|----------------|------------|")
+            for _, row in data["postgres_outbound"].iterrows():
+                lines.append(f"| {row['EXPORT_PATTERN']} | {row['OUTBOUND_OPS']:,} |")
+            lines.append("")
+        
+        if "postgres_tables" in data and not data["postgres_tables"].empty:
+            lines.append("### Top Tables with Postgres Data Lineage")
+            lines.append("")
+            lines.append("| Table | ETL Tool | Load Ops | Avg Load (ms) |")
+            lines.append("|-------|----------|----------|---------------|")
+            for _, row in data["postgres_tables"].head(10).iterrows():
+                lines.append(f"| `{row['TABLE_NAME']}` | {row.get('ETL_TOOL', 'N/A')} | {row['LOAD_OPS']:,} | {row.get('AVG_LOAD_MS', 0):.0f} |")
+            lines.append("")
+        
+        lines.append("**Snowflake Postgres Recommendation:**")
+        if inbound_ops > 100000 or (inbound_ops > 1000 and outbound_ops > 1000):
+            lines.append("Strong candidate for Snowflake Postgres consolidation. Customer has significant Postgres data flows that could be simplified.")
+        elif inbound_ops > 10000:
+            lines.append("Moderate Postgres patterns detected. Worth exploring consolidation opportunity.")
+        else:
+            lines.append("Limited Postgres patterns. Focus on Hybrid Tables or Interactive Analytics.")
+        lines.append("")
+    
     lines.append("---")
     lines.append("")
-    lines.append("_Generated by Unistore Workload Conversion Advisor v2.1_")
+    lines.append("_Generated by Unistore Workload Conversion Advisor v2.2_")
     
     return "\n".join(lines)
 
 
 with tab5:
+    track_tab("Snowflake Postgres")
+    st.header("🐘 Snowflake Postgres Candidates")
+    st.markdown("Identify opportunities for Postgres consolidation based on data flow patterns.")
+    
+    has_postgres_data = any(key in data for key in ["postgres_inbound", "postgres_outbound", "postgres_tables"])
+    
+    if has_postgres_data:
+        col1, col2, col3 = st.columns(3)
+        
+        inbound_ops = 0
+        outbound_ops = 0
+        postgres_tables_count = 0
+        
+        if "postgres_inbound" in data and not data["postgres_inbound"].empty:
+            inbound_ops = data["postgres_inbound"]["INBOUND_OPS"].sum()
+        if "postgres_outbound" in data and not data["postgres_outbound"].empty:
+            outbound_ops = data["postgres_outbound"]["OUTBOUND_OPS"].sum()
+        if "postgres_tables" in data and not data["postgres_tables"].empty:
+            postgres_tables_count = len(data["postgres_tables"])
+        
+        col1.metric("Inbound Postgres Ops", f"{inbound_ops:,}", help="Data flowing INTO Snowflake from Postgres sources")
+        col2.metric("Outbound Export Ops", f"{outbound_ops:,}", help="Data flowing OUT of Snowflake (potential Postgres targets)")
+        col3.metric("Postgres-Sourced Tables", postgres_tables_count, help="Tables receiving data from Postgres via ETL/CDC")
+        
+        sf_postgres_score = 0
+        score_details = []
+        
+        if inbound_ops > 100000:
+            sf_postgres_score += 4
+            score_details.append("✅ High volume Postgres inbound data (+4)")
+        elif inbound_ops > 10000:
+            sf_postgres_score += 2
+            score_details.append("✅ Moderate Postgres inbound data (+2)")
+        
+        if outbound_ops > 50000:
+            sf_postgres_score += 4
+            score_details.append("✅ High volume data exports (+4)")
+        elif outbound_ops > 5000:
+            sf_postgres_score += 2
+            score_details.append("✅ Moderate data exports (+2)")
+        
+        if inbound_ops > 1000 and outbound_ops > 1000:
+            sf_postgres_score += 5
+            score_details.append("✅ Both inbound AND outbound patterns (+5)")
+        
+        if postgres_tables_count > 10:
+            sf_postgres_score += 3
+            score_details.append("✅ Many Postgres-sourced tables (+3)")
+        
+        st.subheader("Snowflake Postgres Fit Score")
+        
+        if sf_postgres_score >= 10:
+            st.success(f"**Score: {sf_postgres_score}/16** — STRONG Snowflake Postgres Candidate")
+        elif sf_postgres_score >= 5:
+            st.warning(f"**Score: {sf_postgres_score}/16** — Moderate candidate, worth exploring")
+        else:
+            st.info(f"**Score: {sf_postgres_score}/16** — Low Postgres activity detected")
+        
+        with st.expander("Score Breakdown"):
+            for detail in score_details:
+                st.markdown(detail)
+            if not score_details:
+                st.markdown("No significant Postgres patterns detected.")
+        
+        st.markdown("---")
+        
+        if "postgres_inbound" in data and not data["postgres_inbound"].empty:
+            st.subheader("📥 Inbound Data Sources (Postgres → Snowflake)")
+            df_in = data["postgres_inbound"]
+            
+            color_map = {
+                "POSTGRES_DIRECT": "#336791",
+                "PG_PREFIX_TABLE": "#4A90A4", 
+                "AWS_RDS": "#FF9900",
+                "AWS_AURORA": "#FF6600",
+                "FIVETRAN_POSTGRES": "#00B2E2",
+                "AIRBYTE_POSTGRES": "#615EFF",
+                "STITCH_POSTGRES": "#00C853",
+                "HVR_POSTGRES": "#E91E63",
+                "DEBEZIUM_CDC": "#9C27B0",
+                "MATILLION_POSTGRES": "#2196F3",
+                "OTHER_POSTGRES": "#9E9E9E"
+            }
+            
+            fig = px.pie(
+                df_in,
+                values="INBOUND_OPS",
+                names="SOURCE_PATTERN",
+                title="Inbound Postgres Data by Source Type",
+                color="SOURCE_PATTERN",
+                color_discrete_map=color_map
+            )
+            fig.update_layout(height=400)
+            st.plotly_chart(fig, use_container_width=True)
+            
+            st.dataframe(df_in, use_container_width=True, hide_index=True)
+        
+        if "postgres_outbound" in data and not data["postgres_outbound"].empty:
+            st.subheader("📤 Outbound Data Exports (Snowflake → External)")
+            df_out = data["postgres_outbound"]
+            
+            fig = px.bar(
+                df_out,
+                x="EXPORT_PATTERN",
+                y="OUTBOUND_OPS",
+                title="Data Export Patterns (Potential Postgres Destinations)",
+                color="EXPORT_PATTERN"
+            )
+            fig.update_layout(height=400, showlegend=False)
+            st.plotly_chart(fig, use_container_width=True)
+            
+            st.dataframe(df_out, use_container_width=True, hide_index=True)
+        
+        if "postgres_tables" in data and not data["postgres_tables"].empty:
+            st.subheader("📋 Tables with Postgres Data Lineage")
+            df_tables = data["postgres_tables"]
+            
+            if "ETL_TOOL" in df_tables.columns:
+                fig = px.scatter(
+                    df_tables,
+                    x="LOAD_OPS",
+                    y="AVG_LOAD_MS",
+                    color="ETL_TOOL",
+                    hover_name="TABLE_NAME",
+                    title="Postgres-Sourced Tables: Load Volume vs Latency",
+                    labels={
+                        "LOAD_OPS": "Load Operations",
+                        "AVG_LOAD_MS": "Avg Load Duration (ms)",
+                        "ETL_TOOL": "ETL Tool"
+                    }
+                )
+                fig.update_xaxes(type="log")
+                fig.update_layout(height=500)
+                st.plotly_chart(fig, use_container_width=True)
+            
+            st.dataframe(df_tables, use_container_width=True, hide_index=True)
+        
+        st.markdown("---")
+        st.subheader("💡 Snowflake Postgres Recommendations")
+        
+        if sf_postgres_score >= 10:
+            st.markdown("""
+            **Strong consolidation opportunity detected:**
+            1. Customer has significant Postgres data flowing into/out of Snowflake
+            2. Snowflake Postgres could replace external Postgres instances
+            3. Simplify ETL pipelines by consolidating on single platform
+            4. Reduce data movement costs and latency
+            
+            **Recommended conversation points:**
+            - "You have {inbound:,} operations moving data from Postgres sources. With Snowflake Postgres, this could be consolidated."
+            - "Your data export patterns suggest feeding external systems. Consider Snowflake Postgres as unified endpoint."
+            """.format(inbound=inbound_ops))
+        elif sf_postgres_score >= 5:
+            st.markdown("""
+            **Moderate Postgres patterns detected:**
+            - Explore whether customer has external Postgres instances
+            - Understand the business drivers for current data flows
+            - Assess migration complexity and benefits
+            """)
+        else:
+            st.markdown("Limited Postgres-related patterns detected. Focus on Hybrid Tables or Interactive Analytics instead.")
+    
+    else:
+        st.info("No Postgres data flow analysis available. Run the Snowflake Postgres detection steps (6c-6f) in the skill to populate this data.")
+        st.markdown("""
+        **To enable Snowflake Postgres analysis:**
+        1. Re-run the skill with Postgres detection steps enabled
+        2. Save `postgres_inbound.csv`, `postgres_outbound.csv`, and `postgres_tables.csv` to the analysis folder
+        """)
+
+
+with tab6:
     track_tab("Summary")
     st.header("📋 Executive Summary")
     
@@ -665,4 +892,4 @@ with tab5:
         telemetry_status = "🟢 Connected" if get_snowpark_session() else "🔴 Disconnected"
         st.caption(f"Telemetry: {telemetry_status}")
     
-    st.caption("Generated by Unistore Workload Conversion Advisor v2.1")
+    st.caption("Generated by Unistore Workload Conversion Advisor v2.2")
