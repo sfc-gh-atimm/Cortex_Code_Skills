@@ -1,4 +1,4 @@
-# Unistore Customer Workload Conversion Advisor
+# Unistore Propensity
 
 Analyzes customer workloads via Snowhouse telemetry to identify tables/queries suitable for conversion to Hybrid Tables or Interactive Analytics.
 
@@ -69,7 +69,7 @@ Events are logged to `AFE.PUBLIC_APP_STATE.APP_EVENTS`:
 | `RUN_ANALYSIS` | Successful analysis completed |
 | `ERROR_ANALYSIS` | Analysis failed |
 
-App identifier: `Unistore Workload Conversion Advisor (Skill)`
+App identifier: `Unistore Propensity (Skill)`
 
 ## Example Trigger Phrases
 

@@ -3,7 +3,7 @@ name: unistore-propensity
 description: "Analyze customer workloads via Snowhouse to identify tables/queries suitable for conversion to Hybrid Tables or Interactive Analytics. Use when: prospecting for Unistore opportunities, identifying conversion candidates, analyzing customer query patterns. Triggers: customer workload analysis, hybrid table candidates, interactive analytics candidates, conversion opportunities, Unistore prospecting."
 ---
 
-# Unistore Customer Workload Conversion Advisor
+# Unistore Propensity
 
 ## Overview
 This skill analyzes a customer's Snowhouse telemetry data (last 30 days) to identify tables and query patterns that would be strong candidates for conversion to Hybrid Tables or Interactive Analytics. It takes customer identifying information (name, account locator, or deployment) and produces actionable recommendations.
@@ -651,7 +651,7 @@ When initial search fails, suggest checking these common patterns:
 | Database | `AFE` |
 | Schema | `PUBLIC_APP_STATE` |
 | Table | `APP_EVENTS` |
-| App Name | `Unistore Workload Conversion Advisor (Skill)` |
+| App Name | `Unistore Propensity (Skill)` |
 | App Version | `2.0.0` |
 
 ### Step: Log Telemetry Event
@@ -665,8 +665,8 @@ INSERT INTO AFE.PUBLIC_APP_STATE.APP_EVENTS (
     ACTION_TYPE, ACTION_CONTEXT, SUCCESS, DURATION_MS
 )
 SELECT
-    'Unistore Workload Conversion Advisor (Skill)',
-    'Unistore Workload Conversion Advisor (Skill)',
+    'Unistore Propensity (Skill)',
+    'Unistore Propensity (Skill)',
     '2.0.0',
     CURRENT_USER(),
     CURRENT_ROLE(),
