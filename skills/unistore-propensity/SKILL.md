@@ -9,7 +9,7 @@ description: "Analyze customer workloads via Snowhouse to identify tables/querie
 This skill analyzes a customer's Snowhouse telemetry data (last 30 days) to identify tables and query patterns that would be strong candidates for conversion to Hybrid Tables or Interactive Analytics. It takes customer identifying information (name, account locator, or deployment) and produces actionable recommendations.
 
 ## Prerequisites
-- Snowhouse connection configured (typically `Snowhouse_PAT` with PAT authentication)
+- Snowhouse connection configured (typically `Snowhouse` with PAT authentication)
 - Access to `SNOWHOUSE.PRODUCT` views and `SNOWHOUSE_IMPORT.PROD` views
 - Access to `AFE.PUBLIC_APP_STATE.APP_EVENTS` for telemetry logging
 
@@ -65,7 +65,7 @@ Ask the user for customer identification:
 Use customer name, alternate name, or account locator to locate their account(s):
 
 ```bash
-snow sql -c Snowhouse_PAT -q "
+snow sql -c Snowhouse -q "
 -- Find customer accounts by name, alternate name, or locator
 SELECT DISTINCT
     a.ID as ACCOUNT_ID,
@@ -102,7 +102,7 @@ If multiple accounts found, present options to user:
 Get high-level query statistics for the account:
 
 ```bash
-snow sql -c Snowhouse_PAT -q "
+snow sql -c Snowhouse -q "
 -- Account query volume summary (last 30 days)
 SELECT 
     DATE_TRUNC('day', jf.CREATED_HOUR) as DAY,
@@ -126,7 +126,7 @@ ORDER BY DAY DESC;
 Get overall statement type distribution:
 
 ```bash
-snow sql -c Snowhouse_PAT -q "
+snow sql -c Snowhouse -q "
 -- Statement type breakdown with latency (30 days)
 SELECT 
     st.STATEMENT_TYPE,
@@ -153,7 +153,7 @@ Before identifying Hybrid Table candidates, classify UPDATE patterns to distingu
 **Note:** Use the deployment-specific schema (e.g., `SNOWHOUSE_IMPORT.VA`) instead of `SNOWHOUSE_IMPORT.PROD` for better performance.
 
 ```bash
-snow sql -c Snowhouse_PAT -q "
+snow sql -c Snowhouse -q "
 -- Classify UPDATE patterns (ETL vs OLTP)
 -- Using deployment-specific schema for performance
 SELECT 
@@ -191,7 +191,7 @@ Look for tables with OLTP-like patterns, **excluding ETL/staging tables**:
 **Note:** Use the deployment-specific schema (e.g., `SNOWHOUSE_IMPORT.VA`) instead of `SNOWHOUSE_IMPORT.PROD` for better performance.
 
 ```bash
-snow sql -c Snowhouse_PAT -q "
+snow sql -c Snowhouse -q "
 -- Tables with UPDATE activity (Hybrid Table candidates)
 -- Using SPLIT_PART for reliable table name extraction
 -- Using deployment-specific schema for performance
@@ -233,7 +233,7 @@ LIMIT 30;
 
 ### Step 5b: Identify DELETE Activity
 ```bash
-snow sql -c Snowhouse_PAT -q "
+snow sql -c Snowhouse -q "
 -- Tables with DELETE activity (Hybrid Table candidates)
 -- Using deployment-specific schema for performance
 WITH delete_queries AS (
@@ -279,7 +279,7 @@ Look for read-heavy tables with sub-second latency potential:
 **Note:** Use the deployment-specific schema (e.g., `SNOWHOUSE_IMPORT.VA`) instead of `SNOWHOUSE_IMPORT.PROD` for better performance.
 
 ```bash
-snow sql -c Snowhouse_PAT -q "
+snow sql -c Snowhouse -q "
 -- Read-heavy tables (Interactive Analytics candidates)
 -- Using deployment-specific schema for performance
 WITH table_activity AS (
@@ -373,7 +373,7 @@ ORDER BY COLUMN_COUNT DESC;
 Sample actual query text to validate patterns:
 
 ```bash
-snow sql -c Snowhouse_PAT -q "
+snow sql -c Snowhouse -q "
 -- Sample UPDATE queries for top candidate table
 -- Using deployment-specific schema for performance
 SELECT 
@@ -732,7 +732,7 @@ When initial search fails, suggest checking these common patterns:
 After completing the analysis, log a telemetry event:
 
 ```bash
-snow sql -c Snowhouse_PAT -q "
+snow sql -c Snowhouse -q "
 INSERT INTO AFE.PUBLIC_APP_STATE.APP_EVENTS (
     APP, APP_NAME, APP_VERSION, USER_NAME, ROLE_NAME, SNOWFLAKE_ACCOUNT,
     SALESFORCE_ACCOUNT_NAME, SNOWFLAKE_ACCOUNT_ID, DEPLOYMENT,

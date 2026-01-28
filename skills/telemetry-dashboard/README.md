@@ -19,6 +19,6 @@ Invoke with phrases like:
 - "What customers have been analyzed?"
 
 ## Prerequisites
-- `Snowhouse_PAT` connection configured
+- `Snowhouse` connection configured
 - Access to `AFE.PUBLIC_APP_STATE` schema
 - Access to `HR.WORKDAY_BASIC` schema (for user emails)

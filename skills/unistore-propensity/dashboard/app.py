@@ -42,7 +42,7 @@ def get_snowpark_session() -> "Session":
         st.session_state.snowpark_session = None
         if SNOWPARK_AVAILABLE:
             try:
-                conn_name = os.getenv("SNOWFLAKE_CONNECTION_NAME", "Snowhouse_PAT")
+                conn_name = os.getenv("SNOWFLAKE_CONNECTION_NAME", "Snowhouse")
                 st.session_state.snowpark_session = Session.builder.config(
                     "connection_name", conn_name
                 ).create()

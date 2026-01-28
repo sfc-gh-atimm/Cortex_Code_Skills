@@ -15,11 +15,11 @@ This skill analyzes query patterns from a customer session ID using Snowhouse in
 ## Query Execution Methods
 
 ### Recommended: `snow sql` with PAT connection (batched queries)
-Use the `Snowhouse_PAT` connection with Programmatic Access Token for non-interactive auth.
+Use the `Snowhouse` connection with Programmatic Access Token for non-interactive auth.
 **Batch multiple queries** to reduce CLI overhead:
 
 ```bash
-snow sql -c Snowhouse_PAT -q "
+snow sql -c Snowhouse -q "
 -- Query 1: Session context
 SELECT 'SESSION_CONTEXT' as query_name, ACCOUNT_ID, DEPLOYMENT, DATABASE_NAME, SCHEMA_NAME, 
        MIN(CREATED_ON) as first_query, MAX(CREATED_ON) as last_query, COUNT(*) as total_queries
@@ -56,7 +56,7 @@ Note: This requires interactive browser login.
 
 ### Performance Tips
 1. **Batch all queries in single call** - Combine multiple statements separated by semicolons
-2. **Use PAT connection** - `Snowhouse_PAT` avoids browser auth overhead
+2. **Use PAT connection** - `Snowhouse` avoids browser auth overhead
 3. **Add time filters early** - Always filter by `CREATED_ON > DATEADD(day, -N, CURRENT_TIMESTAMP())`
 4. **Use LIMIT for exploration** - When sampling data, use LIMIT to avoid full scans
 5. **Consider warehouse size** - SNOWADHOC may be small; larger warehouse = faster queries
@@ -81,7 +81,7 @@ Ask the user for session details using ask_user_question:
 Execute all session-level queries in one batch:
 
 ```bash
-snow sql -c Snowhouse_PAT -q "
+snow sql -c Snowhouse -q "
 -- 1. Session context
 SELECT 'SESSION_CONTEXT' as query_type, 
     ACCOUNT_ID::VARCHAR as val1, DEPLOYMENT as val2, DATABASE_NAME as val3, SCHEMA_NAME as val4,
@@ -151,7 +151,7 @@ ORDER BY TOTAL_DURATION DESC LIMIT 10;
 After getting ACCOUNT_ID, DEPLOYMENT, DATABASE_NAME, SCHEMA_NAME from Step 2:
 
 ```bash
-snow sql -c Snowhouse_PAT -q "
+snow sql -c Snowhouse -q "
 -- 1. Read:Write ratio (30 days)
 SELECT 'READ_WRITE_RATIO' as query_type,
     ROUND(SUM(CASE WHEN DESCRIPTION ILIKE 'SELECT%' THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 4) as select_pct,
@@ -434,7 +434,7 @@ This skill logs usage events to the shared telemetry table for tracking and anal
 After completing the assessment, log a telemetry event using the PAT connection:
 
 ```bash
-snow sql -c Snowhouse_PAT -q "
+snow sql -c Snowhouse -q "
 INSERT INTO AFE.PUBLIC_APP_STATE.APP_EVENTS (
     APP, APP_NAME, APP_VERSION, USER_NAME, ROLE_NAME, SNOWFLAKE_ACCOUNT,
     SALESFORCE_ACCOUNT_ID, SALESFORCE_ACCOUNT_NAME,
@@ -478,7 +478,7 @@ SELECT
 ### Example: Log Success Event
 After generating report for Elevance Health:
 ```bash
-snow sql -c Snowhouse_PAT -q "
+snow sql -c Snowhouse -q "
 INSERT INTO AFE.PUBLIC_APP_STATE.APP_EVENTS (
     APP, APP_NAME, APP_VERSION, USER_NAME, ROLE_NAME, SNOWFLAKE_ACCOUNT,
     SALESFORCE_ACCOUNT_NAME, SNOWFLAKE_ACCOUNT_ID, DEPLOYMENT,
@@ -510,7 +510,7 @@ SELECT
 ### Example: Log Error Event
 If analysis fails:
 ```bash
-snow sql -c Snowhouse_PAT -q "
+snow sql -c Snowhouse -q "
 INSERT INTO AFE.PUBLIC_APP_STATE.APP_EVENTS (
     APP, APP_NAME, APP_VERSION, USER_NAME, ROLE_NAME, SNOWFLAKE_ACCOUNT,
     SNOWFLAKE_ACCOUNT_ID, DEPLOYMENT,

@@ -38,7 +38,7 @@ This skill analyzes query patterns from a customer session ID using Snowhouse in
 
 | Connection | Auth Type | Usage |
 |------------|-----------|-------|
-| `Snowhouse_PAT` | Programmatic Access Token | Recommended (non-interactive) |
+| `Snowhouse` | Programmatic Access Token | Recommended (non-interactive) |
 | `Snowhouse` | externalbrowser | Fallback (interactive) |
 
 ## Telemetry

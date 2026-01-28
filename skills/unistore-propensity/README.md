@@ -57,7 +57,7 @@ This skill takes a customer name (or other identifying information) and queries 
 
 | Connection | Auth Type | Usage |
 |------------|-----------|-------|
-| `Snowhouse_PAT` | Programmatic Access Token | Recommended (non-interactive) |
+| `Snowhouse` | Programmatic Access Token | Recommended (non-interactive) |
 | `Snowhouse` | externalbrowser | Fallback (interactive) |
 
 ## Telemetry

@@ -9,7 +9,7 @@ description: "Query skill telemetry from AFE.PUBLIC_APP_STATE.APP_EVENTS for the
 This skill queries the shared telemetry table `AFE.PUBLIC_APP_STATE.APP_EVENTS` to provide usage metrics for all skills logging to this table. It generates reports for 1, 7, 14, and 30 day time windows, enriched with user email addresses and customer Salesforce account information.
 
 ## Prerequisites
-- Snowhouse connection configured (`Snowhouse_PAT` recommended for non-interactive auth)
+- Snowhouse connection configured (`Snowhouse` recommended for non-interactive auth)
 - Access to `AFE.PUBLIC_APP_STATE.APP_EVENTS` table
 - Access to `HR.WORKDAY_BASIC.SFDC_WORKDAY_USER_VW` for employee email lookup
 
@@ -30,7 +30,7 @@ Use this skill when:
 Execute the following batched query to get all metrics in one call:
 
 ```bash
-snow sql -c Snowhouse_PAT -q "
+snow sql -c Snowhouse -q "
 -- Summary by App (All Time Windows)
 WITH time_windows AS (
     SELECT 
@@ -102,7 +102,7 @@ To get actual user emails, we need a two-step join:
 **Note:** Some user emails in Snowhouse are masked (`*********`) due to data masking policies. For those users, manual HR lookup is required.
 
 ```bash
-snow sql -c Snowhouse_PAT -q "
+snow sql -c Snowhouse -q "
 -- Top users with email addresses (last 30 days)
 WITH telemetry_users AS (
     SELECT 
@@ -152,7 +152,7 @@ LIMIT 20;
 For users showing "(masked)", look up by last name in HR:
 
 ```bash
-snow sql -c Snowhouse_PAT -q "
+snow sql -c Snowhouse -q "
 SELECT PRIMARY_WORK_EMAIL, LEGAL_NAME_FIRST_NAME, LEGAL_NAME_LAST_NAME, 
        BUSINESS_TITLE, DEPARTMENT
 FROM HR.WORKDAY_BASIC.SFDC_WORKDAY_USER_VW
@@ -166,7 +166,7 @@ Example: For login `SPINISETTI`, search `%pinisetti%` to find `srikanth.pinisett
 Extract customer information from telemetry events:
 
 ```bash
-snow sql -c Snowhouse_PAT -q "
+snow sql -c Snowhouse -q "
 -- Customer accounts analyzed (last 30 days)
 SELECT 
     SALESFORCE_ACCOUNT_NAME as customer_name,
@@ -312,7 +312,7 @@ Format the results into a markdown report:
 
 ### Check specific app usage:
 ```bash
-snow sql -c Snowhouse_PAT -q "
+snow sql -c Snowhouse -q "
 SELECT EVENT_TS, COALESCE(VIEWER_EMAIL, USER_NAME) as user, ACTION_TYPE, SUCCESS, DURATION_MS
 FROM AFE.PUBLIC_APP_STATE.APP_EVENTS
 WHERE APP_NAME = '<APP_NAME>'
@@ -322,7 +322,7 @@ LIMIT 20"
 
 ### Check specific user activity:
 ```bash
-snow sql -c Snowhouse_PAT -q "
+snow sql -c Snowhouse -q "
 SELECT EVENT_TS, APP_NAME, ACTION_TYPE, SALESFORCE_ACCOUNT_NAME, SUCCESS
 FROM AFE.PUBLIC_APP_STATE.APP_EVENTS
 WHERE COALESCE(VIEWER_EMAIL, USER_NAME) = '<USER_LOGIN>'
@@ -332,7 +332,7 @@ LIMIT 20"
 
 ### Find user email by login:
 ```bash
-snow sql -c Snowhouse_PAT -q "
+snow sql -c Snowhouse -q "
 SELECT PRIMARY_WORK_EMAIL, LEGAL_NAME_FIRST_NAME, LEGAL_NAME_LAST_NAME, 
        BUSINESS_TITLE, DEPARTMENT
 FROM HR.WORKDAY_BASIC.SFDC_WORKDAY_USER_VW
@@ -342,7 +342,7 @@ LIMIT 5"
 
 ### Get customer analysis history:
 ```bash
-snow sql -c Snowhouse_PAT -q "
+snow sql -c Snowhouse -q "
 SELECT EVENT_TS, APP_NAME, COALESCE(VIEWER_EMAIL, USER_NAME) as analyst,
        ACTION_TYPE, ACTION_CONTEXT
 FROM AFE.PUBLIC_APP_STATE.APP_EVENTS
@@ -353,7 +353,7 @@ LIMIT 20"
 
 ### Get error details:
 ```bash
-snow sql -c Snowhouse_PAT -q "
+snow sql -c Snowhouse -q "
 SELECT EVENT_TS, APP_NAME, ACTION_TYPE, ERROR_MESSAGE, ACTION_CONTEXT
 FROM AFE.PUBLIC_APP_STATE.APP_EVENTS
 WHERE SUCCESS = FALSE
