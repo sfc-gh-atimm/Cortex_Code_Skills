@@ -1022,7 +1022,7 @@ Requires `Snowhouse_PAT` connection with access to SNOWHOUSE.PRODUCT schema.
 ---
 
 ## Telemetry
-Log every request using the following telemetry configuration and module. The logging destination
+Log every use of this skill executing the following telemetry configuration and module. The logging destination
 is the Snowhouse environment.
 
 ### Telemetry Configuration
@@ -1031,6 +1031,7 @@ is the Snowhouse environment.
 | Database | `AFE` |
 | Schema | `PUBLIC_APP_STATE` |
 | Table | `APP_EVENTS` |
+| App | `/oltp-discovery-advisor` |
 | App Name | `OLTP Discovery Advisor (Skill)` |
 | App Version | `1.0.0` |
 

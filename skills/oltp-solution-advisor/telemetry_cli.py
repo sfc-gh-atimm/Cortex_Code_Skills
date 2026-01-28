@@ -77,7 +77,7 @@ def log_event(
         session.sql(
             insert_sql,
             params=[
-                APP_NAME,
+                APP,
                 APP_NAME,
                 APP_VERSION,
                 ident["user_name"],
