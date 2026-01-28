@@ -1,23 +1,20 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from snowflake.snowpark import Session
 
 TELEMETRY_DATABASE = "AFE"
 TELEMETRY_SCHEMA = "PUBLIC_APP_STATE"
 TELEMETRY_TABLE = "APP_EVENTS"
-APP_NAME = "OLTP Discovery Advisor (Skill)"
-APP_VERSION = "1.0.0"
 
 
 def _get_events_table() -> str:
     return f"{TELEMETRY_DATABASE}.{TELEMETRY_SCHEMA}.{TELEMETRY_TABLE}"
 
 
-def _get_identity(session: Session) -> Dict[str, str]:
+def _get_identity(session: Session) -> dict[str, str]:
     try:
         row = session.sql(
             """
@@ -41,58 +38,81 @@ def _get_identity(session: Session) -> Dict[str, str]:
 
 def log_event(
     session: Session,
+    app_name: str,
     action_type: str,
+    account: str | None = None,
+    recommendation: str | None = None,
+    context: dict[str, Any] | None = None,
     success: bool = True,
-    error_message: Optional[str] = None,
-    salesforce_account_id: Optional[str] = None,
-    salesforce_account_name: Optional[str] = None,
-    snowflake_account_id: Optional[str] = None,
-    deployment: Optional[str] = None,
-    context: Optional[Dict[str, Any]] = None,
-    duration_ms: Optional[int] = None,
+    error: str | None = None,
+    app_version: str = "1.0.0",
 ) -> bool:
+    """
+    Log a telemetry event to Snowflake.
+
+    Args:
+        session: Snowpark session
+        app_name: Skill/app identifier (e.g., "oltp-solution-advisor")
+        action_type: Event type (e.g., "ASSESSMENT", "TEMPLATE_PARSE", "ERROR")
+        account: Customer's Snowflake account being analyzed (not caller's account)
+        recommendation: Final recommendation output (e.g., "HT", "PG", "IA", "STANDARD")
+        context: Flexible dict for all analysis details, scores, input documents, etc.
+        success: Whether the operation succeeded
+        error: Error message if success=False
+        app_version: Version string for the skill/app
+
+    Returns:
+        True if event was logged successfully, False otherwise
+
+    Example:
+        log_event(
+            session,
+            app_name="oltp-solution-advisor",
+            action_type="ASSESSMENT",
+            account="OX56889",
+            recommendation="HT",
+            context={
+                "customer_name": "Vistra",
+                "use_case": "Retail Product Comparison",
+                "scores": {"ht": 85, "pg": 60, "ia": 45},
+                "input_document": "<template content>",
+            }
+        )
+    """
     try:
         ident = _get_identity(session)
         ctx_json = json.dumps(context or {}, default=str)
 
-        if error_message and len(error_message) > 500:
-            error_message = error_message[:497] + "..."
+        if error and len(error) > 500:
+            error = error[:497] + "..."
 
         insert_sql = f"""
             INSERT INTO {_get_events_table()} (
-                APP, APP_NAME, APP_VERSION, USER_NAME, ROLE_NAME, SNOWFLAKE_ACCOUNT,
-                SALESFORCE_ACCOUNT_ID, SALESFORCE_ACCOUNT_NAME,
-                SNOWFLAKE_ACCOUNT_ID, DEPLOYMENT,
-                ACTION_TYPE, ACTION_CONTEXT, SUCCESS, ERROR_MESSAGE, DURATION_MS,
-                VIEWER_EMAIL
+                APP, APP_NAME, APP_VERSION,
+                USER_NAME, ROLE_NAME, SNOWFLAKE_ACCOUNT,
+                SNOWFLAKE_ACCOUNT_ID,
+                ACTION_TYPE, ACTION_CONTEXT,
+                RECOMMENDATION,
+                SUCCESS, ERROR_MESSAGE
             )
-            SELECT
-                ?, ?, ?, ?, ?, ?,
-                ?, ?,
-                ?, ?,
-                ?, PARSE_JSON(?), ?, ?, ?,
-                ?
+            SELECT ?, ?, ?, ?, ?, ?, ?, ?, PARSE_JSON(?), ?, ?, ?
         """
 
         session.sql(
             insert_sql,
             params=[
-                APP,
-                APP_NAME,
-                APP_VERSION,
+                app_name,
+                app_name,
+                app_version,
                 ident["user_name"],
                 ident["role_name"],
                 ident["account_name"],
-                salesforce_account_id,
-                salesforce_account_name,
-                snowflake_account_id,
-                deployment,
+                account,
                 action_type,
                 ctx_json,
+                recommendation,
                 success,
-                error_message,
-                duration_ms,
-                None,
+                error,
             ],
         ).collect()
         return True
@@ -102,113 +122,19 @@ def log_event(
 
 def log_error(
     session: Session,
+    app_name: str,
     action_type: str,
-    error: Exception,
-    context: Optional[Dict[str, Any]] = None,
-    salesforce_account_name: Optional[str] = None,
+    error: Exception | str,
+    account: str | None = None,
+    context: dict[str, Any] | None = None,
 ) -> bool:
+    """Convenience wrapper for logging errors."""
     return log_event(
         session=session,
+        app_name=app_name,
         action_type=action_type,
+        account=account,
+        context=context,
         success=False,
-        error_message=str(error),
-        context=context,
-        salesforce_account_name=salesforce_account_name,
+        error=str(error),
     )
-
-
-def track_discovery_assessment(
-    session: Session,
-    customer_name: str,
-    use_case: Optional[str] = None,
-    use_case_link: Optional[str] = None,
-    recommendation: Optional[str] = None,
-    alternative: Optional[str] = None,
-    confidence: Optional[str] = None,
-    template_completeness: Optional[str] = None,
-    missing_fields: Optional[List[str]] = None,
-    scores: Optional[Dict[str, int]] = None,
-    duration_ms: Optional[int] = None,
-    extra_context: Optional[Dict[str, Any]] = None,
-) -> bool:
-    context = {
-        "customer_name": customer_name,
-        "use_case": use_case,
-        "use_case_link": use_case_link,
-        "recommendation": recommendation,
-        "alternative": alternative,
-        "confidence": confidence,
-        "template_completeness": template_completeness,
-        "missing_fields": missing_fields or [],
-        "scores": scores or {},
-        "timestamp": datetime.utcnow().isoformat(),
-    }
-    if extra_context:
-        context.update(extra_context)
-
-    return log_event(
-        session=session,
-        action_type=TelemetryEvents.RUN_DISCOVERY_ASSESSMENT,
-        salesforce_account_name=customer_name,
-        duration_ms=duration_ms,
-        context=context,
-    )
-
-
-def track_template_parse(
-    session: Session,
-    customer_name: str,
-    template_path: str,
-    fields_found: int = 0,
-    fields_missing: int = 0,
-    duration_ms: Optional[int] = None,
-) -> bool:
-    context = {
-        "customer_name": customer_name,
-        "template_path": template_path,
-        "fields_found": fields_found,
-        "fields_missing": fields_missing,
-        "timestamp": datetime.utcnow().isoformat(),
-    }
-
-    return log_event(
-        session=session,
-        action_type=TelemetryEvents.TEMPLATE_PARSED,
-        salesforce_account_name=customer_name,
-        duration_ms=duration_ms,
-        context=context,
-    )
-
-
-def track_report_generated(
-    session: Session,
-    customer_name: str,
-    recommendation: str,
-    output_path: str,
-    duration_ms: Optional[int] = None,
-) -> bool:
-    context = {
-        "customer_name": customer_name,
-        "recommendation": recommendation,
-        "output_path": output_path,
-        "timestamp": datetime.utcnow().isoformat(),
-    }
-
-    return log_event(
-        session=session,
-        action_type=TelemetryEvents.REPORT_GENERATED,
-        salesforce_account_name=customer_name,
-        duration_ms=duration_ms,
-        context=context,
-    )
-
-
-class TelemetryEvents:
-    APP_LAUNCH = "APP_LAUNCH"
-    RUN_DISCOVERY_ASSESSMENT = "RUN_DISCOVERY_ASSESSMENT"
-    TEMPLATE_PARSED = "TEMPLATE_PARSED"
-    REPORT_GENERATED = "REPORT_GENERATED"
-    CLARIFYING_QUESTIONS_GENERATED = "CLARIFYING_QUESTIONS_GENERATED"
-    ERROR_PARSE = "ERROR_PARSE"
-    ERROR_ASSESSMENT = "ERROR_ASSESSMENT"
-    ERROR_REPORT = "ERROR_REPORT"

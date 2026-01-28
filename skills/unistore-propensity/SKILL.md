@@ -1,5 +1,5 @@
 ---
-name: unistore-customer-workload-conversion-advisor
+name: unistore-propensity
 description: "Analyze customer workloads via Snowhouse to identify tables/queries suitable for conversion to Hybrid Tables or Interactive Analytics. Use when: prospecting for Unistore opportunities, identifying conversion candidates, analyzing customer query patterns. Triggers: customer workload analysis, hybrid table candidates, interactive analytics candidates, conversion opportunities, Unistore prospecting."
 ---
 
@@ -452,7 +452,7 @@ After saving structured output, launch the pre-built dashboard:
 
 ```bash
 # Start the dashboard (runs on port 8502)
-streamlit run /Users/atimm/Documents/Unistore/cortex_skills_repo/skills/unistore-customer-workload-conversion-advisor/dashboard/app.py --server.port 8502 --server.headless true
+streamlit run /Users/atimm/Documents/Unistore/cortex_skills_repo/skills/unistore-propensity/dashboard/app.py --server.port 8502 --server.headless true
 ```
 
 The dashboard will:
@@ -467,7 +467,7 @@ The dashboard will:
 - 🔍 **UPDATE Patterns**: ETL vs OLTP classification pie chart
 - 📋 **Summary**: Executive overview with recommendations
 
-**Dashboard Location:** `skills/unistore-customer-workload-conversion-advisor/dashboard/app.py`
+**Dashboard Location:** `skills/unistore-propensity/dashboard/app.py`
 
 ---
 
