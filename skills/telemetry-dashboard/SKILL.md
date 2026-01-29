@@ -50,6 +50,17 @@ WITH time_windows AS (
 )
 SELECT * FROM time_windows ORDER BY last_30d DESC;
 
+-- Recommendation breakdown (for skills that provide recommendations)
+SELECT 
+    APP_NAME,
+    RECOMMENDATION,
+    COUNT(*) as count,
+    ROUND(COUNT(*) * 100.0 / SUM(COUNT(*)) OVER(PARTITION BY APP_NAME), 1) as pct_of_app
+FROM AFE.PUBLIC_APP_STATE.APP_EVENTS
+WHERE RECOMMENDATION IS NOT NULL AND RECOMMENDATION != 'None'
+GROUP BY APP_NAME, RECOMMENDATION
+ORDER BY APP_NAME, count DESC;
+
 -- Daily breakdown (last 14 days)
 SELECT 
     DATE_TRUNC('day', EVENT_TS)::DATE as day,
@@ -254,6 +265,14 @@ Format the results into a markdown report:
 | Time | App | User | Action | Error |
 |------|-----|------|--------|-------|
 | ...  | ... | ...  | ...    | ...   |
+
+---
+
+## Recommendations Breakdown
+
+| App | Recommendation | Count | % of App |
+|-----|----------------|-------|----------|
+| ... | ...            | ...   | ...      |
 ```
 
 ---
@@ -281,6 +300,8 @@ Format the results into a markdown report:
 | ERROR_MESSAGE | VARCHAR | Error details if failed |
 | DURATION_MS | NUMBER | Execution duration |
 | VIEWER_EMAIL | VARCHAR | Actual user login (for Streamlit apps) |
+| APP | VARCHAR | Duplicate/normalized app name field |
+| RECOMMENDATION | VARCHAR | Product recommendation (Hybrid Tables, Postgres, etc.) |
 
 ### User Email Lookup: `SNOWHOUSE_IMPORT.PROD.USER_ETL_V`
 
@@ -359,6 +380,29 @@ FROM AFE.PUBLIC_APP_STATE.APP_EVENTS
 WHERE SUCCESS = FALSE
 ORDER BY EVENT_TS DESC
 LIMIT 10"
+```
+
+### Get recommendation distribution:
+```bash
+snow sql -c Snowhouse -q "
+SELECT 
+    APP_NAME,
+    RECOMMENDATION,
+    COUNT(*) as count,
+    ROUND(COUNT(*) * 100.0 / SUM(COUNT(*)) OVER(PARTITION BY APP_NAME), 1) as pct
+FROM AFE.PUBLIC_APP_STATE.APP_EVENTS
+WHERE RECOMMENDATION IS NOT NULL AND RECOMMENDATION != 'None'
+GROUP BY APP_NAME, RECOMMENDATION
+ORDER BY APP_NAME, count DESC"
+```
+
+### Check current table schema:
+```bash
+snow sql -c Snowhouse -q "
+SELECT column_name, data_type 
+FROM AFE.INFORMATION_SCHEMA.COLUMNS 
+WHERE table_schema = 'PUBLIC_APP_STATE' AND table_name = 'APP_EVENTS' 
+ORDER BY ordinal_position"
 ```
 
 ---
