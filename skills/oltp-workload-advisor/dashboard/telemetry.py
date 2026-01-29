@@ -9,7 +9,7 @@ from snowflake.snowpark import Session
 TELEMETRY_DATABASE = "AFE"
 TELEMETRY_SCHEMA = "PUBLIC_APP_STATE"
 TELEMETRY_TABLE = "APP_EVENTS"
-APP_NAME = "Unistore Workload Conversion Advisor"
+APP_NAME = "OLTP Workload Advisor"
 APP_VERSION = "2.0.0"
 
 

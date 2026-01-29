@@ -30,7 +30,7 @@ except ImportError:
     TELEMETRY_AVAILABLE = False
 
 st.set_page_config(
-    page_title="Unistore Workload Conversion Advisor",
+    page_title="OLTP Workload Advisor",
     page_icon="🔄",
     layout="wide"
 )
@@ -68,7 +68,7 @@ if "app_launched" not in st.session_state:
     st.session_state.app_launched = True
     log_telemetry(TelemetryEvents.APP_LAUNCH if TELEMETRY_AVAILABLE else "APP_LAUNCH")
 
-st.title("🔄 Unistore Workload Conversion Advisor")
+st.title("🔄 OLTP Workload Advisor")
 
 def load_analysis(folder_path: str) -> dict:
     """Load analysis data from output folder."""
@@ -82,13 +82,20 @@ def load_analysis(folder_path: str) -> dict:
     
     for data_file in ["daily_activity", "statement_summary", "update_patterns", 
                          "hybrid_candidates", "ia_candidates", "delete_activity",
-                         "postgres_inbound", "postgres_outbound", "postgres_tables"]:
+                         "postgres_inbound", "postgres_outbound", "postgres_tables",
+                         "postgres_inbound_tables", "postgres_outbound_tables",
+                         "executive_summary", "current_ht_usage", "current_ia_usage", 
+                         "current_postgres_usage"]:
         csv_path = folder / f"{data_file}.csv"
         parquet_path = folder / f"{data_file}.parquet"
+        txt_path = folder / f"{data_file}.txt"
         if csv_path.exists():
             data[data_file] = pd.read_csv(csv_path)
         elif parquet_path.exists():
             data[data_file] = pd.read_parquet(parquet_path)
+        elif txt_path.exists():
+            with open(txt_path, 'r') as f:
+                data[data_file] = f.read()
     
     return data
 
@@ -183,14 +190,192 @@ def track_tab(tab_name: str):
                 deployment=data["metadata"].get("deployment"),
             )
 
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+tab0, tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+    "📋 Executive Summary",
     "📈 Daily Timeline", 
     "🎯 Hybrid Tables", 
     "📊 Interactive Analytics",
     "🔍 UPDATE Patterns",
     "🐘 Snowflake Postgres",
-    "📋 Summary"
+    "📋 Full Report"
 ])
+
+def compute_ht_score(row):
+    """Compute Hybrid Table fit score (0-10) based on UPDATE patterns."""
+    score = 0
+    update_count = row.get('UPDATE_COUNT', 0)
+    param_count = row.get('PARAMETERIZED_COUNT', 0)
+    param_pct = (param_count / update_count * 100) if update_count > 0 else 0
+    p50_ms = row.get('P50_DURATION_MS', 0)
+    p99_ms = row.get('P99_DURATION_MS', 0)
+    
+    if update_count >= 100000:
+        score += 3
+    elif update_count >= 10000:
+        score += 2
+    elif update_count >= 1000:
+        score += 1
+    
+    if param_pct >= 90:
+        score += 4
+    elif param_pct >= 70:
+        score += 3
+    elif param_pct >= 50:
+        score += 2
+    
+    if p50_ms <= 500:
+        score += 2
+    elif p50_ms <= 1000:
+        score += 1
+    
+    if p99_ms <= 2000:
+        score += 1
+    
+    return min(score, 10)
+
+
+def render_current_usage_section(data, product_type):
+    """Render current usage section for a product type."""
+    key_map = {
+        "hybrid_tables": ("current_ht_usage", "Hybrid Tables", "🎯"),
+        "interactive_analytics": ("current_ia_usage", "Interactive Analytics", "📊"),
+        "snowflake_postgres": ("current_postgres_usage", "Snowflake Postgres", "🐘")
+    }
+    data_key, label, emoji = key_map.get(product_type, (None, None, None))
+    
+    if data_key and data_key in data:
+        st.markdown(f"### {emoji} Current {label} Usage")
+        usage_data = data[data_key]
+        if isinstance(usage_data, pd.DataFrame) and not usage_data.empty:
+            if 'STATUS' in usage_data.columns:
+                status = usage_data['STATUS'].iloc[0]
+                details = usage_data['DETAILS'].iloc[0] if 'DETAILS' in usage_data.columns else ""
+                
+                if 'Not Detected' in str(status) or 'No ' in str(details):
+                    st.info(f"**{status}**\n\n{details}")
+                else:
+                    if 'TABLE_COUNT' in usage_data.columns:
+                        table_count = usage_data['TABLE_COUNT'].iloc[0]
+                    else:
+                        table_count = len(usage_data)
+                    col1, col2 = st.columns([1, 2])
+                    with col1:
+                        st.metric(f"Active {label} Tables", table_count)
+                    with col2:
+                        st.dataframe(usage_data, use_container_width=True, hide_index=True)
+            elif 'USAGE_STATUS' in usage_data.columns:
+                status = usage_data['USAGE_STATUS'].iloc[0]
+                notes = usage_data['NOTES'].iloc[0] if 'NOTES' in usage_data.columns else ""
+                
+                if 'No current' in str(status):
+                    st.info(f"**{status}**\n\n{notes}")
+                else:
+                    if 'TABLE_COUNT' in usage_data.columns:
+                        table_count = usage_data['TABLE_COUNT'].iloc[0]
+                    else:
+                        table_count = len(usage_data)
+                    col1, col2 = st.columns([1, 2])
+                    with col1:
+                        st.metric(f"Active {label} Tables", table_count)
+                    with col2:
+                        st.dataframe(usage_data, use_container_width=True, hide_index=True)
+            else:
+                if 'TABLE_COUNT' in usage_data.columns:
+                    table_count = usage_data['TABLE_COUNT'].iloc[0]
+                else:
+                    table_count = len(usage_data)
+                col1, col2 = st.columns([1, 2])
+                with col1:
+                    st.metric(f"Active {label} Tables", table_count)
+                with col2:
+                    st.dataframe(usage_data, use_container_width=True, hide_index=True)
+        elif isinstance(usage_data, str):
+            st.info(usage_data)
+        else:
+            st.info(f"No current {label} usage detected in this account.")
+    else:
+        st.info(f"Current {label} usage data not available. Re-run analysis to collect.")
+
+
+with tab0:
+    track_tab("Executive Summary")
+    st.header("📋 Executive Summary")
+    
+    if "executive_summary" in data and data["executive_summary"]:
+        st.markdown(data["executive_summary"])
+    else:
+        if "metadata" in data:
+            meta = data["metadata"]
+            st.markdown(f"""
+### Analysis Overview
+**Customer:** {meta.get('customer_name', 'N/A')}  
+**Account:** {meta.get('account_name', 'N/A')} ({meta.get('account_id', 'N/A')})  
+**Deployment:** {meta.get('deployment', 'N/A')}  
+**Analysis Period:** {meta.get('analysis_days', 30)} days  
+**Total Queries Analyzed:** {meta.get('total_queries', 0):,}
+
+---
+
+### Key Findings
+            """)
+            
+            ht_count = meta.get('hybrid_candidates_count', 0)
+            ia_count = meta.get('ia_candidates_count', 0)
+            postgres_flag = meta.get('postgres_candidate', False)
+            
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Hybrid Table Candidates", ht_count)
+            with col2:
+                st.metric("Interactive Analytics Candidates", ia_count)
+            with col3:
+                st.metric("Snowflake Postgres Candidate", "Yes" if postgres_flag else "No")
+            
+            st.markdown("---")
+            st.markdown("### Recommendations")
+            
+            if "hybrid_candidates" in data and not data["hybrid_candidates"].empty:
+                df_ht = data["hybrid_candidates"].copy()
+                if "SCORE" not in df_ht.columns:
+                    df_ht["SCORE"] = df_ht.apply(compute_ht_score, axis=1)
+                strong_ht = len(df_ht[df_ht["SCORE"] >= 8])
+                moderate_ht = len(df_ht[(df_ht["SCORE"] >= 5) & (df_ht["SCORE"] < 8)])
+                if strong_ht > 0:
+                    st.success(f"✅ **Hybrid Tables**: {strong_ht} strong candidates identified with high UPDATE volumes and parameterized queries")
+                elif moderate_ht > 0:
+                    st.warning(f"⚠️ **Hybrid Tables**: {moderate_ht} moderate candidates worth reviewing")
+                else:
+                    st.info("ℹ️ **Hybrid Tables**: Candidates identified but need further evaluation")
+            
+            if "ia_candidates" in data and not data["ia_candidates"].empty:
+                df_ia = data["ia_candidates"]
+                strong_ia = len(df_ia[df_ia.get("IA_FIT") == "STRONG"]) if "IA_FIT" in df_ia.columns else 0
+                moderate_ia = len(df_ia[df_ia.get("IA_FIT") == "MODERATE"]) if "IA_FIT" in df_ia.columns else 0
+                if strong_ia > 0:
+                    st.success(f"✅ **Interactive Analytics**: {strong_ia} strong candidates with high read percentages")
+                elif moderate_ia > 0:
+                    st.warning(f"⚠️ **Interactive Analytics**: {moderate_ia} moderate candidates")
+            
+            if postgres_flag or ("postgres_inbound" in data and not data["postgres_inbound"].empty):
+                inbound_ops = data["postgres_inbound"]["INBOUND_OPS"].sum() if "postgres_inbound" in data and not data["postgres_inbound"].empty else 0
+                if inbound_ops > 100000:
+                    st.success(f"✅ **Snowflake Postgres**: Strong candidate with {inbound_ops:,} inbound Postgres operations")
+                elif inbound_ops > 10000:
+                    st.warning(f"⚠️ **Snowflake Postgres**: Moderate patterns detected ({inbound_ops:,} inbound ops)")
+        else:
+            st.info("Load an analysis to view executive summary.")
+    
+    st.markdown("---")
+    st.markdown("### Current Product Usage")
+    
+    usage_col1, usage_col2, usage_col3 = st.columns(3)
+    with usage_col1:
+        render_current_usage_section(data, "hybrid_tables")
+    with usage_col2:
+        render_current_usage_section(data, "interactive_analytics")
+    with usage_col3:
+        render_current_usage_section(data, "snowflake_postgres")
+
 
 with tab1:
     track_tab("Daily Timeline")
@@ -245,46 +430,105 @@ with tab1:
 with tab2:
     track_tab("Hybrid Tables")
     st.header("🎯 Hybrid Table Candidates")
-    st.markdown("Tables with UPDATE/DELETE patterns suitable for sub-10ms OLTP workloads.")
+    
+    with st.expander("ℹ️ What are Hybrid Tables?", expanded=False):
+        st.markdown("""
+**Hybrid Tables** are optimized for OLTP (transactional) workloads requiring:
+- **Sub-10ms point lookups** via indexed primary keys
+- **High-frequency single-row UPDATEs** (e.g., status changes, counters)
+- **Parameterized queries** that target specific rows by key
+
+**Scoring Criteria (0-10 scale):**
+| Factor | Points | Threshold |
+|--------|--------|-----------|
+| UPDATE Volume | 1-3 | 1K=1pt, 10K=2pt, 100K+=3pt |
+| Parameterized % | 2-4 | 50%=2pt, 70%=3pt, 90%+=4pt |
+| P50 Latency | 1-2 | ≤1000ms=1pt, ≤500ms=2pt |
+| P99 Latency | 0-1 | ≤2000ms=1pt |
+
+**Fit Categories:** Strong (8-10), Moderate (5-7), Low (<5)
+        """)
+    
+    render_current_usage_section(data, "hybrid_tables")
+    st.markdown("---")
     
     if "hybrid_candidates" in data and not data["hybrid_candidates"].empty:
         df = data["hybrid_candidates"].copy()
         
-        strong = len(df[df.get("SCORE", 0) >= 8]) if "SCORE" in df.columns else 0
-        moderate = len(df[(df.get("SCORE", 0) >= 5) & (df.get("SCORE", 0) < 8)]) if "SCORE" in df.columns else 0
+        if "SCORE" not in df.columns:
+            df["SCORE"] = df.apply(compute_ht_score, axis=1)
         
-        col1, col2, col3 = st.columns(3)
+        if "HT_FIT" not in df.columns:
+            df["HT_FIT"] = df["SCORE"].apply(lambda s: "STRONG" if s >= 8 else ("MODERATE" if s >= 5 else "LOW"))
+        
+        strong = len(df[df["SCORE"] >= 8])
+        moderate = len(df[(df["SCORE"] >= 5) & (df["SCORE"] < 8)])
+        
+        col1, col2, col3, col4 = st.columns(4)
         col1.metric("Total Candidates", len(df))
-        col2.metric("Strong Fit", strong, help="Score >= 8")
-        col3.metric("Moderate Fit", moderate, help="Score 5-7")
+        col2.metric("Strong Fit", strong, help="Score >= 8: High volume + 90%+ parameterized + low latency")
+        col3.metric("Moderate Fit", moderate, help="Score 5-7: Good potential, needs review")
+        col4.metric("Low Fit", len(df) - strong - moderate, help="Score < 5")
+        
+        if "PARAMETERIZED_PCT" not in df.columns and "PARAMETERIZED_COUNT" in df.columns:
+            df["PARAMETERIZED_PCT"] = (df["PARAMETERIZED_COUNT"] / df["UPDATE_COUNT"] * 100).round(1)
+        
+        color_col = "HT_FIT" if "HT_FIT" in df.columns else ("PARAMETERIZED_PCT" if "PARAMETERIZED_PCT" in df.columns else None)
         
         fig = px.scatter(
             df,
             x="UPDATE_COUNT",
             y="P50_DURATION_MS",
             size="UPDATE_COUNT",
-            color="PARAMETERIZED_PCT" if "PARAMETERIZED_PCT" in df.columns else None,
+            color=color_col,
             hover_name="TABLE_NAME",
-            hover_data=["AVG_DURATION_MS", "P99_DURATION_MS"] if "P99_DURATION_MS" in df.columns else None,
-            title="UPDATE Volume vs Latency",
+            hover_data=["AVG_DURATION_MS", "P99_DURATION_MS", "SCORE", "PARAMETERIZED_PCT"] if "P99_DURATION_MS" in df.columns else ["SCORE"],
+            title="UPDATE Volume vs Latency (colored by Fit)",
             labels={
                 "UPDATE_COUNT": "UPDATE Count (30 days)",
                 "P50_DURATION_MS": "P50 Latency (ms)",
+                "HT_FIT": "HT Fit",
                 "PARAMETERIZED_PCT": "Parameterized %"
             },
-            color_continuous_scale="RdYlGn"
+            color_discrete_map={"STRONG": "#2E86AB", "MODERATE": "#F39237", "LOW": "#CCCCCC"}
         )
         fig.update_xaxes(type="log")
         fig.update_yaxes(type="log")
         fig.update_layout(height=500)
         st.plotly_chart(fig, use_container_width=True)
         
+        if "HT_FIT" in df.columns:
+            st.subheader("📊 Candidates by Fit Category")
+            fit_order = {"STRONG": 0, "MODERATE": 1, "LOW": 2}
+            df_sorted = df.copy()
+            df_sorted["_sort"] = df_sorted["HT_FIT"].map(fit_order)
+            df_sorted = df_sorted.sort_values(["_sort", "UPDATE_COUNT"], ascending=[True, False]).head(20)
+            
+            colors = df_sorted["HT_FIT"].map({"STRONG": "#2E86AB", "MODERATE": "#F39237", "LOW": "#CCCCCC"})
+            
+            fig2 = go.Figure(go.Bar(
+                x=df_sorted["UPDATE_COUNT"],
+                y=df_sorted["TABLE_NAME"],
+                orientation="h",
+                marker_color=colors,
+                text=df_sorted["HT_FIT"] + " (" + df_sorted["SCORE"].astype(str) + ")",
+                textposition="inside"
+            ))
+            fig2.update_layout(
+                title="Top Candidates by UPDATE Volume",
+                xaxis_title="UPDATE Count",
+                yaxis_title="",
+                height=max(400, min(len(df_sorted), 20) * 30),
+                yaxis=dict(autorange="reversed")
+            )
+            st.plotly_chart(fig2, use_container_width=True)
+        
         st.subheader("📋 Candidate Details")
-        display_cols = ["TABLE_NAME", "UPDATE_COUNT", "PARAMETERIZED_COUNT", 
-                       "AVG_DURATION_MS", "P50_DURATION_MS", "P99_DURATION_MS", "SCORE"]
+        display_cols = ["TABLE_NAME", "UPDATE_COUNT", "PARAMETERIZED_COUNT", "PARAMETERIZED_PCT",
+                       "AVG_DURATION_MS", "P50_DURATION_MS", "P99_DURATION_MS", "SCORE", "HT_FIT"]
         display_cols = [c for c in display_cols if c in df.columns]
         st.dataframe(
-            df[display_cols].sort_values(by="UPDATE_COUNT", ascending=False),
+            df[display_cols].sort_values(by="SCORE", ascending=False),
             use_container_width=True,
             hide_index=True
         )
@@ -298,7 +542,26 @@ with tab2:
 with tab3:
     track_tab("Interactive Analytics")
     st.header("📊 Interactive Analytics Candidates")
-    st.markdown("Read-heavy tables suitable for sub-second analytical queries.")
+    
+    with st.expander("ℹ️ What is Interactive Analytics?", expanded=False):
+        st.markdown("""
+**Interactive Analytics (IA)** tables are optimized for read-heavy analytical workloads requiring:
+- **Sub-second query response** for dashboards and BI tools
+- **High read-to-write ratios** (80%+ SELECT operations)
+- **Frequent repeated queries** against the same tables
+
+**Fit Criteria:**
+| Factor | Strong | Moderate |
+|--------|--------|----------|
+| Read % | ≥90% | ≥70% |
+| Total Operations | ≥10K | ≥1K |
+| Avg SELECT Latency | ≤2000ms | ≤5000ms |
+
+**Ideal Use Cases:** Dashboard backing tables, report caches, frequently-queried dimension tables
+        """)
+    
+    render_current_usage_section(data, "interactive_analytics")
+    st.markdown("---")
     
     if "ia_candidates" in data and not data["ia_candidates"].empty:
         df = data["ia_candidates"].copy()
@@ -430,7 +693,7 @@ def generate_markdown_report(data: dict) -> str:
     lines = []
     meta = data.get("metadata", {})
     
-    lines.append("# Unistore Workload Conversion Analysis Report")
+    lines.append("# OLTP Workload Analysis Report")
     lines.append("")
     lines.append(f"**Customer:** {meta.get('customer_name', 'N/A')}")
     lines.append(f"**Account ID:** {meta.get('account_id', 'N/A')}")
@@ -604,7 +867,7 @@ def generate_markdown_report(data: dict) -> str:
     
     lines.append("---")
     lines.append("")
-    lines.append("_Generated by Unistore Workload Conversion Advisor v2.2_")
+    lines.append("_Generated by OLTP Workload Advisor v2.5_")
     
     return "\n".join(lines)
 
@@ -612,7 +875,26 @@ def generate_markdown_report(data: dict) -> str:
 with tab5:
     track_tab("Snowflake Postgres")
     st.header("🐘 Snowflake Postgres Candidates")
-    st.markdown("Identify opportunities for Postgres consolidation based on data flow patterns.")
+    
+    with st.expander("ℹ️ What is Snowflake Postgres?", expanded=False):
+        st.markdown("""
+**Snowflake Postgres** provides PostgreSQL wire-protocol compatibility for workloads requiring:
+- **PostgreSQL client compatibility** (psycopg2, JDBC, etc.)
+- **Consolidation of existing Postgres** data flows into Snowflake
+- **Hybrid transaction/analytics** using familiar Postgres tooling
+
+**Assessment Criteria:**
+| Signal | Strong Indicator |
+|--------|------------------|
+| Inbound Postgres Ops | ≥100K (HVR, Fivetran, Airbyte loading from Postgres) |
+| Postgres-Named Tables | Tables with "PG", "POSTGRES" in naming |
+| Bidirectional Flow | Both inbound loads and outbound exports |
+
+**Ideal Use Cases:** Postgres migration, hybrid OLTP consolidation, Postgres toolchain compatibility
+        """)
+    
+    render_current_usage_section(data, "snowflake_postgres")
+    st.markdown("---")
     
     has_postgres_data = any(key in data for key in ["postgres_inbound", "postgres_outbound", "postgres_tables"])
     
@@ -627,8 +909,10 @@ with tab5:
             inbound_ops = data["postgres_inbound"]["INBOUND_OPS"].sum()
         if "postgres_outbound" in data and not data["postgres_outbound"].empty:
             outbound_ops = data["postgres_outbound"]["OUTBOUND_OPS"].sum()
-        if "postgres_tables" in data and not data["postgres_tables"].empty:
-            postgres_tables_count = len(data["postgres_tables"])
+        if "postgres_inbound_tables" in data and not data["postgres_inbound_tables"].empty:
+            postgres_tables_count += len(data["postgres_inbound_tables"])
+        if "postgres_outbound_tables" in data and not data["postgres_outbound_tables"].empty:
+            postgres_tables_count += len(data["postgres_outbound_tables"])
         
         col1.metric("Inbound Postgres Ops", f"{inbound_ops:,}", help="Data flowing INTO Snowflake from Postgres sources")
         col2.metric("Outbound Export Ops", f"{outbound_ops:,}", help="Data flowing OUT of Snowflake (potential Postgres targets)")
@@ -637,27 +921,36 @@ with tab5:
         sf_postgres_score = 0
         score_details = []
         
-        if inbound_ops > 100000:
+        if inbound_ops > 50000:
             sf_postgres_score += 4
             score_details.append("✅ High volume Postgres inbound data (+4)")
-        elif inbound_ops > 10000:
+        elif inbound_ops > 5000:
+            sf_postgres_score += 3
+            score_details.append("✅ Moderate Postgres inbound data (+3)")
+        elif inbound_ops > 1000:
             sf_postgres_score += 2
-            score_details.append("✅ Moderate Postgres inbound data (+2)")
+            score_details.append("✅ Some Postgres inbound data (+2)")
         
-        if outbound_ops > 50000:
+        if outbound_ops > 25000:
             sf_postgres_score += 4
             score_details.append("✅ High volume data exports (+4)")
-        elif outbound_ops > 5000:
+        elif outbound_ops > 2500:
+            sf_postgres_score += 3
+            score_details.append("✅ Moderate data exports (+3)")
+        elif outbound_ops > 500:
             sf_postgres_score += 2
-            score_details.append("✅ Moderate data exports (+2)")
+            score_details.append("✅ Some data exports (+2)")
         
         if inbound_ops > 1000 and outbound_ops > 1000:
-            sf_postgres_score += 5
-            score_details.append("✅ Both inbound AND outbound patterns (+5)")
+            sf_postgres_score += 4
+            score_details.append("✅ Both inbound AND outbound patterns (+4)")
         
         if postgres_tables_count > 10:
             sf_postgres_score += 3
             score_details.append("✅ Many Postgres-sourced tables (+3)")
+        elif postgres_tables_count > 5:
+            sf_postgres_score += 2
+            score_details.append("✅ Multiple Postgres-sourced tables (+2)")
         
         st.subheader("Snowflake Postgres Fit Score")
         
@@ -748,29 +1041,94 @@ with tab5:
             st.dataframe(df_tables, use_container_width=True, hide_index=True)
         
         st.markdown("---")
+        
+        if "postgres_inbound_tables" in data and not data["postgres_inbound_tables"].empty:
+            st.subheader("📥 Destination Tables (Postgres → Snowflake)")
+            st.markdown("*Snowflake tables receiving data FROM external Postgres databases via HVR/Fivetran CDC*")
+            df_inbound_tables = data["postgres_inbound_tables"]
+            
+            col_in1, col_in2 = st.columns([1, 2])
+            with col_in1:
+                st.metric("Unique Destination Tables", len(df_inbound_tables))
+                total_inbound_ops = df_inbound_tables["INBOUND_LOAD_OPS"].sum() if "INBOUND_LOAD_OPS" in df_inbound_tables.columns else 0
+                st.metric("Total Inbound Operations", f"{total_inbound_ops:,}")
+            
+            with col_in2:
+                fig_in = px.bar(
+                    df_inbound_tables.head(15),
+                    x="INBOUND_LOAD_OPS" if "INBOUND_LOAD_OPS" in df_inbound_tables.columns else "DESTINATION_TABLE",
+                    y="DESTINATION_TABLE",
+                    orientation="h",
+                    title="Top 15 Destination Tables by Load Operations",
+                    color_discrete_sequence=["#336791"]
+                )
+                fig_in.update_layout(height=400, yaxis=dict(autorange="reversed"))
+                st.plotly_chart(fig_in, use_container_width=True)
+            
+            with st.expander("📋 Full Inbound Table List", expanded=False):
+                st.dataframe(df_inbound_tables, use_container_width=True, hide_index=True)
+        
+        if "postgres_outbound_tables" in data and not data["postgres_outbound_tables"].empty:
+            st.subheader("📤 Source Tables (Snowflake → Postgres)")
+            st.markdown("*Snowflake tables being exported TO external Postgres databases (identified by EXP_ naming patterns)*")
+            df_outbound_tables = data["postgres_outbound_tables"]
+            
+            col_out1, col_out2 = st.columns([1, 2])
+            with col_out1:
+                st.metric("Unique Source Tables", len(df_outbound_tables))
+                total_outbound_ops = df_outbound_tables["EXPORT_OPS"].sum() if "EXPORT_OPS" in df_outbound_tables.columns else 0
+                st.metric("Total Export Operations", f"{total_outbound_ops:,}")
+            
+            with col_out2:
+                fig_out = px.bar(
+                    df_outbound_tables.head(15),
+                    x="EXPORT_OPS" if "EXPORT_OPS" in df_outbound_tables.columns else "SOURCE_TABLE",
+                    y="SOURCE_TABLE",
+                    orientation="h",
+                    title="Top 15 Source Tables by Export Operations",
+                    color_discrete_sequence=["#E91E63"]
+                )
+                fig_out.update_layout(height=400, yaxis=dict(autorange="reversed"))
+                st.plotly_chart(fig_out, use_container_width=True)
+            
+            with st.expander("📋 Full Outbound Table List", expanded=False):
+                st.dataframe(df_outbound_tables, use_container_width=True, hide_index=True)
+        
+        st.markdown("---")
         st.subheader("💡 Snowflake Postgres Recommendations")
         
         if sf_postgres_score >= 10:
             st.markdown("""
             **Strong consolidation opportunity detected:**
-            1. Customer has significant Postgres data flowing into/out of Snowflake
-            2. Snowflake Postgres could replace external Postgres instances
-            3. Simplify ETL pipelines by consolidating on single platform
-            4. Reduce data movement costs and latency
+            
+            **Key value proposition:** Migrate external Postgres sources to Snowflake Postgres to:
+            - **Improve data/cost visibility** — All data in one platform with unified governance
+            - **Reduce data movement** — Eliminate ETL pipelines moving data between systems
+            - **Simplify architecture** — Single platform for OLTP and analytics
             
             **Recommended conversation points:**
-            - "You have {inbound:,} operations moving data from Postgres sources. With Snowflake Postgres, this could be consolidated."
-            - "Your data export patterns suggest feeding external systems. Consider Snowflake Postgres as unified endpoint."
+            - "You have {inbound:,} operations moving data from Postgres sources. With Snowflake Postgres, this data could live natively in Snowflake."
+            - "By consolidating Postgres workloads, you'd reduce infrastructure costs and eliminate data latency."
+            - "Snowflake Postgres provides PostgreSQL compatibility with Snowflake's scalability and governance."
             """.format(inbound=inbound_ops))
         elif sf_postgres_score >= 5:
             st.markdown("""
-            **Moderate Postgres patterns detected:**
-            - Explore whether customer has external Postgres instances
-            - Understand the business drivers for current data flows
-            - Assess migration complexity and benefits
+            **Moderate Postgres integration opportunity:**
+            
+            **Key value proposition:** Migrate external Postgres sources to Snowflake Postgres to improve data/cost visibility and reduce data movement overhead.
+            
+            **Discovery questions:**
+            - What external Postgres instances are feeding data into Snowflake?
+            - What business processes depend on this data flow?
+            - What latency requirements exist for the data?
+            
+            **Potential benefits:**
+            - Unified governance and access control
+            - Reduced ETL complexity and maintenance
+            - Single source of truth for both transactional and analytical workloads
             """)
         else:
-            st.markdown("Limited Postgres-related patterns detected. Focus on Hybrid Tables or Interactive Analytics instead.")
+            st.markdown("Limited Postgres data flow patterns detected. Consider focusing on Hybrid Tables or Interactive Analytics for this account.")
     
     else:
         st.info("No Postgres data flow analysis available. Run the Snowflake Postgres detection steps (6c-6f) in the skill to populate this data.")
@@ -782,8 +1140,8 @@ with tab5:
 
 
 with tab6:
-    track_tab("Summary")
-    st.header("📋 Executive Summary")
+    track_tab("Full Report")
+    st.header("📋 Full Report")
     
     col_header1, col_header2 = st.columns([3, 1])
     with col_header2:
@@ -892,4 +1250,4 @@ with tab6:
         telemetry_status = "🟢 Connected" if get_snowpark_session() else "🔴 Disconnected"
         st.caption(f"Telemetry: {telemetry_status}")
     
-    st.caption("Generated by Unistore Workload Conversion Advisor v2.2")
+    st.caption("Generated by OLTP Workload Advisor v2.5")
