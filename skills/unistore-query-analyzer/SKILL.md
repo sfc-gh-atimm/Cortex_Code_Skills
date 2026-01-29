@@ -1,5 +1,5 @@
 ---
-name: hybrid-table-query-analyzer
+name: unistore-query-analyzer
 description: >
   Diagnose and explain slow Hybrid Table queries using Snowhouse + SnowVI,
   then produce ASE-facing next steps and customer-ready recommendations.
