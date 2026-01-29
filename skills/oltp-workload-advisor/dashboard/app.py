@@ -4,69 +4,16 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import pandas as pd
 import json
-import os
 import time
 from pathlib import Path
 from datetime import datetime
 from io import StringIO
-
-try:
-    from snowflake.snowpark import Session
-    SNOWPARK_AVAILABLE = True
-except ImportError:
-    SNOWPARK_AVAILABLE = False
-
-try:
-    from telemetry import (
-        TelemetryEvents,
-        log_event,
-        log_error,
-        track_analysis_loaded,
-        track_workload_analysis,
-        track_tab_view,
-    )
-    TELEMETRY_AVAILABLE = True
-except ImportError:
-    TELEMETRY_AVAILABLE = False
 
 st.set_page_config(
     page_title="OLTP Workload Advisor",
     page_icon="🔄",
     layout="wide"
 )
-
-
-def get_snowpark_session() -> "Session":
-    """Get or create Snowpark session for telemetry."""
-    if "snowpark_session" not in st.session_state:
-        st.session_state.snowpark_session = None
-        if SNOWPARK_AVAILABLE:
-            try:
-                conn_name = os.getenv("SNOWFLAKE_CONNECTION_NAME", "Snowhouse")
-                st.session_state.snowpark_session = Session.builder.config(
-                    "connection_name", conn_name
-                ).create()
-            except Exception:
-                pass
-    return st.session_state.snowpark_session
-
-
-def log_telemetry(action_type: str, **kwargs) -> bool:
-    """Log telemetry event if available."""
-    if not TELEMETRY_AVAILABLE:
-        return False
-    session = get_snowpark_session()
-    if session is None:
-        return False
-    try:
-        return log_event(session, action_type, **kwargs)
-    except Exception:
-        return False
-
-
-if "app_launched" not in st.session_state:
-    st.session_state.app_launched = True
-    log_telemetry(TelemetryEvents.APP_LAUNCH if TELEMETRY_AVAILABLE else "APP_LAUNCH")
 
 st.title("🔄 OLTP Workload Advisor")
 
@@ -132,36 +79,10 @@ if load_button:
         st.session_state.data = load_analysis(analysis_path)
         st.sidebar.success(f"Loaded analysis from {analysis_path}")
         
-        load_duration_ms = int((time.time() - load_start) * 1000)
-        if TELEMETRY_AVAILABLE and "metadata" in st.session_state.data:
-            meta = st.session_state.data["metadata"]
-            session = get_snowpark_session()
-            if session:
-                track_analysis_loaded(
-                    session=session,
-                    customer_name=meta.get("customer_name", "Unknown"),
-                    account_id=meta.get("account_id"),
-                    deployment=meta.get("deployment"),
-                    analysis_days=meta.get("analysis_days"),
-                    total_queries=meta.get("total_queries"),
-                    hybrid_candidates=meta.get("hybrid_candidates_count"),
-                    ia_candidates=meta.get("ia_candidates_count"),
-                    duration_ms=load_duration_ms,
-                )
     except Exception as e:
         import traceback
         st.sidebar.error(f"Error loading: {e}")
         st.sidebar.code(traceback.format_exc())
-        
-        if TELEMETRY_AVAILABLE:
-            session = get_snowpark_session()
-            if session:
-                log_error(
-                    session=session,
-                    action_type="ERROR_LOAD",
-                    error=e,
-                    context={"analysis_path": analysis_path},
-                )
 
 if st.session_state.data is None:
     st.info("👈 Select an analysis folder and click 'Load Analysis' to begin.")
@@ -177,18 +98,6 @@ if "metadata" in data:
     st.sidebar.markdown(f"**Deployment:** {meta.get('deployment', 'N/A')}")
     st.sidebar.markdown(f"**Period:** {meta.get('analysis_days', 30)} days")
     st.sidebar.markdown(f"**Generated:** {meta.get('generated_at', 'N/A')[:10]}")
-
-def track_tab(tab_name: str):
-    """Track tab view in telemetry."""
-    if TELEMETRY_AVAILABLE and "metadata" in data:
-        session = get_snowpark_session()
-        if session:
-            track_tab_view(
-                session=session,
-                customer_name=data["metadata"].get("customer_name", "Unknown"),
-                tab_name=tab_name,
-                deployment=data["metadata"].get("deployment"),
-            )
 
 tab0, tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
     "📋 Executive Summary",
@@ -298,7 +207,6 @@ def render_current_usage_section(data, product_type):
 
 
 with tab0:
-    track_tab("Executive Summary")
     st.header("📋 Executive Summary")
     
     if "executive_summary" in data and data["executive_summary"]:
@@ -378,7 +286,6 @@ with tab0:
 
 
 with tab1:
-    track_tab("Daily Timeline")
     st.header("📈 Daily Query Activity")
     
     if "daily_activity" in data:
@@ -428,7 +335,6 @@ with tab1:
         st.warning("No daily activity data available.")
 
 with tab2:
-    track_tab("Hybrid Tables")
     st.header("🎯 Hybrid Table Candidates")
     
     with st.expander("ℹ️ What are Hybrid Tables?", expanded=False):
@@ -540,7 +446,6 @@ with tab2:
         st.info("No Hybrid Table candidates identified.")
 
 with tab3:
-    track_tab("Interactive Analytics")
     st.header("📊 Interactive Analytics Candidates")
     
     with st.expander("ℹ️ What is Interactive Analytics?", expanded=False):
@@ -627,7 +532,6 @@ with tab3:
         st.info("No Interactive Analytics candidates identified.")
 
 with tab4:
-    track_tab("UPDATE Patterns")
     st.header("🔍 UPDATE Pattern Classification")
     st.markdown("Distinguishing OLTP point updates from ETL bulk operations.")
     
@@ -873,7 +777,6 @@ def generate_markdown_report(data: dict) -> str:
 
 
 with tab5:
-    track_tab("Snowflake Postgres")
     st.header("🐘 Snowflake Postgres Candidates")
     
     with st.expander("ℹ️ What is Snowflake Postgres?", expanded=False):
@@ -1140,7 +1043,6 @@ with tab5:
 
 
 with tab6:
-    track_tab("Full Report")
     st.header("📋 Full Report")
     
     col_header1, col_header2 = st.columns([3, 1])
@@ -1244,10 +1146,5 @@ with tab6:
             st.info("No strong Interactive Analytics candidates identified.")
     
     st.markdown("---")
-    
-    with st.sidebar:
-        st.markdown("---")
-        telemetry_status = "🟢 Connected" if get_snowpark_session() else "🔴 Disconnected"
-        st.caption(f"Telemetry: {telemetry_status}")
     
     st.caption("Generated by OLTP Workload Advisor v2.5")
