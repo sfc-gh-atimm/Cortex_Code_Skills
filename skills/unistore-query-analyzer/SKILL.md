@@ -1,7 +1,7 @@
 ---
 name: unistore-query-analyzer
 description: "Diagnose slow Hybrid Table queries. Use when: analyzing HT performance, debugging HT latency, comparing before/after query runs."
-version: 0.4.0
+version: 0.5.0
 schema-version: 1.0
 tags:
   - snowflake
@@ -289,79 +289,139 @@ cte_with_join = has_cte and has_join
 
 #### Additional Checks (SnowVI JSON Required)
 
-If the user provided a SnowVI JSON file, perform these additional checks:
+If the user provided a SnowVI JSON file, use the `references/snowvi_parser.py` module:
 
-#### Check 3: Bind Parameter Type Mismatch
+```bash
+python3 references/snowvi_parser.py "<JSON_PATH>"
+```
 
-Extract bind parameters and column types from the SnowVI JSON and verify they match:
+Or inline:
 
 ```python
-# Extract from SnowVI JSON
-operators = d.get('queryData',{}).get('data',{}).get('operators',{})
-# Look for parameter bindings and compare data types with table column definitions
+import json
 
-# Example warning if mismatch found:
+with open('<JSON_PATH>') as f:
+    d = json.load(f)
+
+# SnowVI JSON Structure:
+# - d['queryId'] - Query UUID
+# - d['queryData']['data']['globalInfo']['queryOverview']['sqlText'] - Full SQL
+# - d['sdls'][step_id]['rsos'] - Scan operators (RSOs)
+# - d['sdls'][step_id]['catalog']['objects'] - Table definitions
+# - d['sdls'][step_id]['catalog']['columns'] - Column definitions
+# - d['processes'][n]['lastReport']['xpRsoPerfAnalyzerStats'] - HT scan performance
+# - d['processes'][n]['lastReport']['snowtramFdbStats'] - FDB I/O stats
+
+# Extract scan operators from SDLs
+sdls = d.get('sdls', {})
+for step_id, step in sdls.items():
+    # Table catalog
+    tables = {obj['id']: obj['name'] for obj in step.get('catalog', {}).get('objects', [])}
+    
+    # Scan operators (RSOs)
+    for rso in step.get('rsos', []):
+        rso_type = rso.get('type', '')  # e.g., 'HybridKvTableScan'
+        table_id = rso.get('object', 0)
+        table_name = tables.get(table_id, f'table_{table_id}')
+        filter_push = rso.get('filterPush', [])  # Pushed predicates = filter optimization
+        has_filter = len(filter_push) > 0
+        
+        print(f"{rso_type} on {table_name}: filter_pushdown={has_filter}")
 ```
 
-```
-⚠️ **Bind parameter type mismatch**
+#### Check 3: Hybrid Table Scan Performance
 
-Parameter type does not match column type:
-- Column `user_id` is `NUMBER(38,0)` but parameter is `VARCHAR`
-
-**Impact:** Type mismatch can cause:
-- Implicit type conversion overhead
-- Index bypass (full table scan)
-- Incorrect results in edge cases
-
-**Recommendation:** Ensure application passes parameters with matching data types.
-```
-
-#### Check 4: Index Usage Verification
-
-For queries with predicates, verify that all scan nodes are using indexes:
+Extract HT scan stats from process reports:
 
 ```python
-# Extract operators from SnowVI JSON
-operators = d.get('queryData',{}).get('data',{}).get('operators',{})
-
-# Check each operator for scan type
-for op_id, op in operators.items():
-    op_type = op.get('operatorType', '')
-    # Look for: RowScan, TableScan, IndexScan, etc.
-    # Check if 'indexName' or similar field is present
+# Extract HT scan performance from worker processes
+processes = d.get('processes', [])
+for proc in processes:
+    for perf in proc.get('lastReport', {}).get('xpRsoPerfAnalyzerStats', []):
+        if perf.get('statType') == 'hybridTableScanPerformanceStats':
+            print(f"RSO: {perf.get('rso')}")
+            print(f"  Exec time: {perf.get('execTime', 0) / 1000:.2f} ms")
+            print(f"  Rows: {perf.get('numFilteredRows', 0):,} / {perf.get('totalNumRows', 0):,}")
+            print(f"  Bytes: {perf.get('totalNumBytes', 0):,}")
+            print(f"  Ranges: {perf.get('processedRanges', 0)}")
+            print(f"  Skew: {perf.get('skew', 0)}%")
 ```
 
-**If a predicate exists but no index is used:**
+**Example output:**
 
 ```
-⚠️ **No index used for predicate**
+✅ **Hybrid Table Scan Performance**
 
-The query has filter predicates but is not using an index:
-- Operator: `TableScan` on `full_load_notifications`
-- Predicate: `entity_name = ?`
+| RSO | Table | Exec Time | Rows (filtered/total) | Selectivity | Ranges | Skew |
+|-----|-------|-----------|----------------------|-------------|--------|------|
+| KvTableScan0 | FULL_LOAD_NOTIFICATIONS | 8.3 ms | 2 / 2 | 100% | 13 | 82% |
+```
 
-**Expected:** `RowScan` or `IndexScan` with index name
+#### Check 4: Filter Pushdown Verification
 
-**Impact:** Full table scan instead of index lookup causes:
-- Higher latency
-- Increased FDB I/O
+For Hybrid Tables, verify predicates are pushed down:
+
+```python
+# Check if filters are pushed to scan operators
+for step_id, step in sdls.items():
+    for rso in step.get('rsos', []):
+        if 'Hybrid' in rso.get('type', '') or 'Kv' in rso.get('type', ''):
+            filter_push = rso.get('filterPush', [])
+            if filter_push:
+                print(f"✅ Filter pushdown on {rso['type']}: {len(filter_push)} predicate(s)")
+            else:
+                print(f"⚠️ No filter pushdown on {rso['type']} - possible full scan")
+```
+
+**If filter pushdown is present:**
+
+```
+✅ **Filter pushdown active**
+
+- Operator: `HybridKvTableScan` on `FULL_LOAD_NOTIFICATIONS`
+- Pushed predicates: 2 (entity_name, is_processed)
+- This enables efficient index-based lookup
+```
+
+**If NO filter pushdown:**
+
+```
+⚠️ **No filter pushdown detected**
+
+The query scans `HybridKvTableScan` without pushed predicates.
+
+**Impact:**
+- Full table scan instead of index lookup
+- Higher latency and FDB I/O
 - Poor scalability as table grows
 
-**Recommendation:** 
-1. Verify an index exists on the filtered column(s)
-2. Check if predicate data type matches index column type
-3. Consider creating index: `CREATE INDEX idx_entity ON table(entity_name)`
+**Possible causes:**
+1. Filter column not in predicate
+2. Type mismatch preventing pushdown
+3. Complex expression not pushable
+
+**Recommendation:** Check that filter columns match index columns and types.
 ```
 
-**If ROW SCAN is used with an index:**
+#### Check 5: FDB I/O Analysis
 
-```
-✅ **Index used for predicate**
+```python
+# Extract FDB stats from processes
+total_fdb_io = 0
+total_fdb_exec_us = 0
 
-- Operator: `RowScan` using index `idx_entity_processed`
-- Predicate: `entity_name = ? AND is_processed = ?`
+for proc in d.get('processes', []):
+    for fdb in proc.get('lastReport', {}).get('snowtramFdbStats', []):
+        total_fdb_io += fdb.get('fdbIoBytes', 0) or 0
+        total_fdb_exec_us += fdb.get('fdbExecutionUs', 0) or 0
+
+print(f"FDB I/O: {total_fdb_io:,} bytes")
+print(f"FDB Execution: {total_fdb_exec_us / 1000:.2f} ms")
 ```
+
+**Thresholds:**
+- FDB I/O > 10MB: Consider index optimization
+- FDB Execution > 100ms: Investigate throttling or contention
 
 ## Step 8: Log Telemetry (REQUIRED)
 
@@ -377,7 +437,7 @@ INSERT INTO AFE.PUBLIC_APP_STATE.APP_EVENTS (
 SELECT
     'unistore-query-analyzer',
     'unistore-query-analyzer',
-    '0.4.0',
+    '0.5.0',
     CURRENT_USER(),
     CURRENT_ROLE(),
     CURRENT_ACCOUNT(),
@@ -440,4 +500,78 @@ python scripts/run_ht_analysis.py \
 - `references/workflow.md` - Detailed workflow steps
 - `references/json_schema.md` - Full output schema
 - `references/sql_fallback.md` - SQL queries for manual analysis
+- `references/snowvi_parser.py` - Python module for parsing SnowVI JSON
 - `ht_analyzer/field_manual/` - Finding-specific documentation
+
+## SnowVI JSON Schema Reference
+
+```
+d = json.load(snowvi_file)
+
+# Top-level
+d['queryId']                    # Query UUID
+d['queryData']                  # Main query data
+d['workersData']                # Worker execution data (list)
+d['processes']                  # Process stats (list)
+d['sdls']                       # SDL per step (dict: step_id -> SDL)
+
+# Query Overview
+d['queryData']['data']['globalInfo']['queryOverview']
+    .id                         # Query UUID
+    .sqlText                    # Full SQL text
+    .status                     # SUCCESS, FAILED, etc.
+    .state                      # SUCCEEDED, etc.
+
+# Session Info
+d['queryData']['data']['globalInfo']['session']
+    .accountName                # Snowflake account
+    .userName                   # User who ran query
+    .clientApplication          # e.g., "PythonConnector 3.17.3"
+
+# SDL Structure (per step)
+d['sdls'][step_id]
+    .sql                        # SQL for this step
+    .stmtType                   # SELECT, INSERT, etc.
+    .catalog.objects[]          # Table definitions
+        .id                     # Table ID
+        .name                   # Full table name (DB.SCHEMA.TABLE)
+        .databaseName           # Database name
+        .schemaName             # Schema name
+        .datastoreId            # Datastore ID
+    .catalog.columns[]          # Column definitions
+        .id                     # Column ID
+        .label                  # Column label
+        .logicalType            # text, fixed, boolean, etc.
+        .physicalType           # lob, sb8, etc.
+    .rsos[]                     # Scan operators
+        .id                     # RSO ID
+        .type                   # HybridKvTableScan, TableScan, etc.
+        .object                 # Table ID reference
+        .logicalId              # Logical plan ID
+        .filterPush[]           # Pushed predicates (key for index usage!)
+            .colPos[]           # Column positions
+            .filter             # Filter definition
+        .scansetId              # Scan set ID
+        .blobScanMode           # Scan mode
+
+# Process Stats (per worker)
+d['processes'][n]['lastReport']
+    .stats                      # General stats dict
+    .snowtramFdbStats[]         # FDB I/O stats
+        .dbId                   # Database ID
+        .fdbIoBytes             # FDB I/O bytes
+        .fdbExecutionUs         # FDB execution microseconds
+        .fdbThrottlingUs        # FDB throttling microseconds
+    .xpRsoPerfAnalyzerStats[]   # RSO performance stats
+        .statType               # "hybridTableScanPerformanceStats"
+        .rso                    # RSO name (e.g., "KvTableScan0")
+        .rsoId                  # RSO ID
+        .tableId                # Table ID
+        .execTime               # Execution time (microseconds)
+        .numFilteredRows        # Rows after filtering
+        .totalNumRows           # Total rows scanned
+        .totalNumBytes          # Bytes scanned
+        .processedRanges        # Number of ranges processed
+        .columnarCacheParquetBytes  # Cache hit bytes
+        .skew                   # Skew percentage
+```
