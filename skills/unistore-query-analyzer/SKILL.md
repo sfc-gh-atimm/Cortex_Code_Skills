@@ -1,87 +1,149 @@
 ---
 name: unistore-query-analyzer
-description: >
-  Diagnose and explain slow Hybrid Table queries using Snowhouse + SnowVI,
-  then produce ASE-facing next steps and customer-ready recommendations.
-version: 0.1.0
+description: "Diagnose slow Hybrid Table queries. Use when: analyzing HT performance, debugging HT latency, comparing before/after query runs."
+version: 0.4.0
 schema-version: 1.0
 tags:
   - snowflake
   - hybrid-tables
   - performance
   - diagnostics
-  - snowhouse
-entry: scripts/run_ht_analysis.py
-allowed-tools:
-  - snowflake_connections_list
-  - snowflake_switch_connection
-  - snowflake_query
-  - fs_read_file
-  - fs_write_file
-  - shell
-  - ask_user_question
 ---
 
 # Hybrid Table Query Analyzer
 
-## Purpose
-
-Use this skill to run the same **Hybrid Table Query Analyzer** pipeline that powers the Snowsight Streamlit app, but from **Cortex Code CLI / CoCo Desktop**.
-
-The skill:
-- Fetches **Snowhouse** metadata for a given query UUID  
-- Optionally enriches with **SnowVI JSON** and plan/feature extraction  
-- Applies the same **policy-guided, guardrailed analysis** used in the app  
-- Returns:
-  - An **ASE-facing diagnosis + next steps**
-  - A **structured JSON analysis** payload for further automation
-
+Analyze Hybrid Table query performance using Snowhouse telemetry and SnowVI enrichment.
 
 ## When to Invoke
 
-Use this skill when you see prompts like:
+- "Analyze Hybrid Table performance for UUID `<UUID>`"
+- "Explain why this HT query is slow: `<UUID>`"
+- "Compare these two HT query runs"
+- "Debug Hybrid Table latency"
 
-- "Analyze Hybrid Table performance for UUID <UUID>"
-- "Explain why this Hybrid Table query is slow: <UUID>"
-- "Compare these two runs of the same Hybrid Table query"
-- "Generate customer-ready recommendations for this HT query"
-- "Run the HT analyzer" or "Analyze a hybrid table query"
+## Workflow
 
-Typical user intents:
-- SE/PS/Support debugging a customer's Hybrid Table workload
-- Comparing **before/after** performance of a change
+### Step 1: Gather Query UUID
+
+```json
+{
+  "questions": [
+    {"header": "Query UUID", "question": "Enter the Snowflake Query UUID to analyze:", "type": "text", "defaultValue": ""}
+  ]
+}
+```
+
+### Step 2: Lookup Query & Check SnowVI Availability
+
+**If user did NOT provide a SnowVI JSON path**, first lookup the query and check if SnowVI data was persisted:
+
+```sql
+WITH params AS (
+    SELECT 
+        '<QUERY_UUID>'::string AS uuid,
+        TO_TIMESTAMP(TO_NUMBER(LEFT('<QUERY_UUID>', 8), 'XXXXXXXX') * 60) AS uuid_ts
+)
+SELECT
+    q.uuid AS QUERY_ID,
+    q.deployment AS DEPLOYMENT,
+    q.total_duration AS TOTAL_DURATION_MS,
+    q.account_id AS ACCOUNT_ID,
+    q.created_on AS QUERY_TIMESTAMP,
+    q.query_parameterized_hash AS QUERY_HASH,
+    LEFT(q.description, 200) AS QUERY_PREVIEW,
+    BITAND(q.flags, 1125899906842624) = 0 AS SNOWVI_DATA_AVAILABLE,
+    temp.perfsol.get_deployment_link(q.deployment, q.uuid) AS SNOWVI_LINK
+FROM SNOWHOUSE_IMPORT.PROD.JOB_ETL_V q
+JOIN params p ON q.uuid = p.uuid
+WHERE q.created_on BETWEEN DATEADD(minute, -20, p.uuid_ts) AND DATEADD(minute, 20, p.uuid_ts)
+LIMIT 1;
+```
+
+### Step 3: Present Results & SnowVI Status (REQUIRED)
+
+**ALWAYS present this step to the user.** Display the query overview and SnowVI status:
+
+#### If `SNOWVI_DATA_AVAILABLE = true`:
+
+```
+**Query Overview:**
+| Field | Value |
+|-------|-------|
+| Query ID | <QUERY_ID> |
+| Snowflake Account ID | <ACCOUNT_ID> |
+| Deployment | <DEPLOYMENT> |
+| Duration | <TOTAL_DURATION_MS> ms |
 
 
-## Interactive Mode
+✅ **SnowVI data is available** for this query.
 
-**IMPORTANT**: When the user invokes this skill without providing all required inputs (e.g., just says "analyze a hybrid table query" or "run HT analyzer"), you MUST use the `ask_user_question` tool to prompt them for options.
+**SnowVI Link:** <SNOWVI_LINK>
 
-### Step 1: Gather Required Inputs
+**To download the SnowVI JSON for deeper analysis:**
+1. Open the SnowVI link above
+2. Wait for the query profile to load
+3. Click the **"Export"** button (top-right)
+4. Select **"Export as JSON"**
+5. Save the file locally
+6. Re-run this skill with the path to the downloaded JSON
+```
 
-Use `ask_user_question` to collect the query UUID and optional SnowVI path:
+Then ask:
 
 ```json
 {
   "questions": [
     {
-      "header": "Query UUID",
-      "question": "Enter the Snowflake Query UUID to analyze:",
-      "type": "text",
-      "defaultValue": "01234567-89ab-cdef-0123-456789abcdef"
-    },
-    {
-      "header": "SnowVI JSON",
-      "question": "Path to SnowVI JSON file (optional, speeds up analysis):",
-      "type": "text",
-      "defaultValue": ""
+      "header": "Continue",
+      "question": "How would you like to proceed?",
+      "type": "options",
+      "multiSelect": false,
+      "options": [
+        {"label": "Continue without SnowVI", "description": "Proceed with basic Snowhouse analysis"},
+        {"label": "I have the JSON", "description": "I downloaded the SnowVI JSON and will provide the path"}
+      ]
     }
   ]
 }
 ```
 
-### Step 2: Gather Analysis Options
+**If user selects "I have the JSON"**, first find the newest JSON file in ~/Downloads:
 
-Use `ask_user_question` with multiSelect to let users choose analysis options:
+```bash
+ls -t ~/Downloads/*.json 2>/dev/null | head -1
+```
+
+Then ask for the path, using the newest JSON file as the default (or fallback to generic path if none found):
+
+```json
+{
+  "questions": [
+    {"header": "SnowVI JSON", "question": "Enter the path to the SnowVI JSON file:", "type": "text", "defaultValue": "<newest_json_file_or_~/Downloads/snowvi-export.json>"}
+  ]
+}
+```
+
+#### If `SNOWVI_DATA_AVAILABLE = false`:
+
+```
+**Query Overview:**
+| Field | Value |
+|-------|-------|
+| Query ID | <QUERY_ID> |
+| Deployment | <DEPLOYMENT> |
+| Duration | <TOTAL_DURATION_MS> ms |
+| Account ID | <ACCOUNT_ID> |
+
+❌ **SnowVI data was NOT persisted** for this query (flag not set).
+
+**SnowVI Link:** <SNOWVI_LINK> (basic view only, no detailed profiling)
+
+Proceeding with Snowhouse-only analysis.
+```
+
+Then continue directly to Step 4.
+
+### Step 4: Gather Analysis Options
 
 ```json
 {
@@ -92,331 +154,154 @@ Use `ask_user_question` with multiSelect to let users choose analysis options:
       "type": "options",
       "multiSelect": true,
       "options": [
-        {
-          "label": "SnowVI link",
-          "description": "Include a SnowVI URL in the output for further debugging"
-        },
-        {
-          "label": "History table",
-          "description": "Include query history table and timeline chart"
-        },
-        {
-          "label": "Debug mode",
-          "description": "Show detailed progress messages during analysis"
-        }
+        {"label": "History table", "description": "Include query history timeline"},
+        {"label": "Debug mode", "description": "Show detailed progress"}
       ]
     }
   ]
 }
 ```
 
-### Step 3: Optional Deployment Override
+### Step 5: Fetch Full Query Metadata
 
-If the user has SnowVI JSON, deployment is extracted automatically. Otherwise, optionally ask:
+Use the `DEPLOYMENT`, `ACCOUNT_ID`, and `QUERY_TIMESTAMP` from Step 2:
 
-```json
-{
-  "questions": [
-    {
-      "header": "Deployment",
-      "question": "Snowflake deployment (leave blank to auto-detect):",
-      "type": "text",
-      "defaultValue": ""
-    }
-  ]
-}
+```sql
+SELECT
+    uuid AS QUERY_ID,
+    account_id AS ACCOUNT_ID,
+    total_duration AS TOTAL_DURATION_MS,
+    dur_compiling AS DUR_COMPILING_MS,
+    dur_gs_executing AS DUR_GS_EXECUTING_MS,
+    dur_xp_executing AS DUR_XP_EXECUTING_MS,
+    access_kv_table AS ACCESS_KV_TABLE,
+    database_name AS DATABASE_NAME,
+    schema_name AS SCHEMA_NAME,
+    warehouse_name AS WAREHOUSE_NAME,
+    LEFT(description, 500) AS QUERY_PREVIEW,
+    stats:stats.producedRows::NUMBER AS ROWS_PRODUCED,
+    stats:stats.snowTramFDBIOBytes::NUMBER AS FDB_IO_BYTES,
+    error_code AS ERROR_CODE,
+    query_parameterized_hash AS QUERY_HASH,
+    created_on AS CREATED_ON
+FROM SNOWHOUSE_IMPORT.<DEPLOYMENT>.JOB_ETL_JPS_V
+WHERE uuid = '<QUERY_UUID>'
+  AND account_id = <ACCOUNT_ID>
+  AND created_on BETWEEN DATEADD(minute, -20, '<QUERY_TIMESTAMP>'::timestamp) AND DATEADD(minute, 20, '<QUERY_TIMESTAMP>'::timestamp)
+LIMIT 1;
 ```
 
-### Mapping User Selections to CLI Flags
+### Step 6: Fetch Query History (If Selected)
 
-| User Selection | CLI Flag |
-|---------------|----------|
-| SnowVI link | `--include-snowvi-link` |
-| History table | `--include-history-table` |
-| Debug mode | `--debug` |
+Use the `QUERY_HASH` and `ACCOUNT_ID` from Step 2:
 
-### Example Full Command
+```sql
+WITH executions AS (
+    SELECT
+        DATE(created_on) AS execution_date,
+        total_duration AS duration_ms
+    FROM SNOWHOUSE_IMPORT.<DEPLOYMENT>.JOB_ETL_JPS_V
+    WHERE query_parameterized_hash = '<QUERY_HASH>'
+      AND account_id = '<ACCOUNT_ID>'
+      AND created_on >= DATEADD(day, -30, CURRENT_TIMESTAMP())
+      AND error_code IS NULL
+)
+SELECT
+    execution_date,
+    COUNT(*) AS execution_count,
+    PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY duration_ms) AS p50_latency,
+    PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY duration_ms) AS p95_latency,
+    PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY duration_ms) AS p99_latency
+FROM executions
+GROUP BY execution_date
+ORDER BY execution_date DESC;
+```
 
-After collecting inputs, construct and run:
+### Step 7: Apply Analysis Heuristics
+
+| Metric | Threshold | Finding |
+|--------|-----------|---------|
+| `TOTAL_DURATION_MS` > 1000 | Slow query | Review execution plan |
+| `DUR_XP_EXECUTING_MS` > 500 | XP bottleneck | Check index usage |
+| `FDB_IO_BYTES` > 10MB | High FDB I/O | Consider index optimization |
+| `ACCESS_KV_TABLE` = false | Not using HT path | Query may not benefit from HT |
+| `DUR_COMPILING_MS` > 200 | Slow compilation | Check for plan cache issues |
+
+## Step 8: Log Telemetry (REQUIRED)
+
+After completing analysis, log telemetry:
+
+```bash
+snow sql -c Snowhouse -q "
+INSERT INTO AFE.PUBLIC_APP_STATE.APP_EVENTS (
+    APP, APP_NAME, APP_VERSION,
+    USER_NAME, ROLE_NAME, SNOWFLAKE_ACCOUNT,
+    ACTION_TYPE, ACTION_CONTEXT, SUCCESS
+)
+SELECT
+    'unistore-query-analyzer',
+    'unistore-query-analyzer',
+    '0.4.0',
+    CURRENT_USER(),
+    CURRENT_ROLE(),
+    CURRENT_ACCOUNT(),
+    'RUN_ANALYSIS',
+    PARSE_JSON('{
+        \"query_uuid\": \"<QUERY_UUID>\",
+        \"account_id\": \"<ACCOUNT_ID>\",
+        \"deployment\": \"<DEPLOYMENT>\",
+        \"total_duration_ms\": <DURATION>,
+        \"analysis_method\": \"sql_fallback\",
+        \"snowvi_enriched\": <true|false>,
+        \"findings_count\": <COUNT>,
+        \"grade\": \"<GRADE>\"
+    }'),
+    TRUE
+;"
+```
+
+## Output
+
+Present analysis results with:
+- **Query Overview**: UUID, deployment, account, duration
+- **Performance Breakdown**: Compilation, GS execution, XP execution times
+- **Findings**: Based on heuristics above
+- **SnowVI Link**: If available
+- **Recommendations**: Actionable next steps
+
+---
+
+## Python Script (DISABLED)
+
+> **Note:** Python script is currently disabled due to Snowpark cffi memory issues. Use SQL fallback above.
+
+<!--
+### Option A: Python Script (Full Analysis)
 
 ```bash
 python scripts/run_ht_analysis.py \
   --uuid "<query_uuid>" \
   --snowvi-path "<path_if_provided>" \
-  --deployment "<deployment_if_provided>" \
+  --snowhouse-connection Snowhouse \
   --include-snowvi-link \
-  --debug
+  --include-history-table
 ```
 
-Note: The script uses the current/default Snowflake connection. To use a specific connection, either:
-- Set `SNOWFLAKE_CONNECTION_NAME` environment variable, or
-- Pass `--snowhouse-connection <connection_name>`
+| Flag | Purpose |
+|------|---------|
+| `--uuid` | Query UUID to analyze |
+| `--snowvi-path` | SnowVI JSON path (if provided) |
+| `--deployment` | Override deployment detection |
+| `--comparison-uuid` | Second UUID for comparison |
+| `--include-snowvi-link` | Generate SnowVI URL |
+| `--include-history-table` | Include history data |
+| `--debug` | Verbose output |
+| `--quick` | Skip LLM, deterministic only |
+-->
 
+## References
 
-## Role
-
-You are a **Snowflake Hybrid Table performance expert** operating as a Cortex Code skill.
-
-You:
-
-- Understand **Snowhouse** telemetry (JOB\_ETL\_JPS\_V, USAGE\_TRACKING\_V, etc.)
-- Understand **SnowVI JSON** exports and derived features
-- Understand the **Hybrid Table Query Analyzer** logic (grades, findings, coverage, plan cache, candidate actions)
-- Produce:
-  - Short, tactical guidance for an **Account SE**
-  - **Deterministic JSON outputs** that other tools can consume
-
-
-## Inputs
-
-The primary inputs are:
-
-- **Required**
-  - `query_uuid`: The Snowflake job UUID for the query to analyze  
-    - If omitted, and `snowvi_path` is provided, the skill will attempt to infer `query_uuid` from the SnowVI JSON.
-
-- **Optional**
-  - `deployment`: Snowflake deployment (e.g. `azeastus2prod`); if omitted, resolve via Snowhouse as the app does
-  - `snowvi_path`: Local path to a SnowVI JSON export for this query (if available)
-  - `comparison_uuid`: A second UUID to compare against (before/after analysis)
-  - `include_history_table`: Include query history table + timeline chart in output
-  - `include_snowvi_link`: Include a SnowVI URL for the query in the output
-  - `debug`: Enable debug mode (prints progress messages and disables telemetry)
-  - `symptom`: Optional symptom category (e.g. `latency_spikes`, `timeouts`, `quota_issues`)
-  - `symptom_description`: Free-text description of what the customer is seeing
-
-
-## High-Level Workflow
-
-At a high level, the skill should follow this workflow:
-
-1. **Connection & Environment Detection**
-   - Confirm required Snowflake connections exist:
-     - A **Snowhouse** connection (for telemetry)
-     - Optionally, a **customer account** connection, if needed
-   - If missing, guide the user to:
-     - Run `snow connection add`
-     - Use `Snowhouse` as the inference/telemetry connection
-
-2. **Parameter Collection & Validation**
-   - Ask the user for:
-     - `query_uuid` (optional if `snowvi_path` provided)
-     - Optional `deployment`, `snowvi_path`, `comparison_uuid`, `symptom`, `symptom_description`
-   - If `query_uuid` is not provided, attempt to infer it from SnowVI JSON.
-   - Validate basic UUID shape and that required values are non-empty.
-
-3. **Metadata Fetch (Snowhouse)**
-   - Call into a local Python script (`scripts/run_ht_analysis.py`) or module that:
-     - Resolves deployment for the UUID (using the same tiered JOB\_ETL / USAGE views as the app)
-     - Queries `SNOWHOUSE_IMPORT.<deployment>.JOB_ETL_JPS_V` (or union view) to fetch:
-       - Core timing metrics (total, compile, GS exec, XP exec)
-       - Rows/bytes, HT flags, FDB / KV metrics
-       - Plan cache fields (CACHEDPLANID, PLANCACHE\_ORIGINAL\_JOB\_UUID, QUERY\_PARAMETERIZED\_HASH)
-     - Optionally fetches **query history** for the parameterized hash and derives "always slow" vs "anomaly" context
-
-4. **Optional SnowVI Enrichment**
-  - If `snowvi_path` is provided:
-     - Load SnowVI JSON from the local filesystem
-     - Extract:
-       - Hybrid index metadata and coverage
-       - Hot RSOs and operator timing
-       - Join-explosion indicators
-       - KV / FDB timing and probe counts
-       - UDF/UDTF usage and bulk-load patterns
-     - Merge these into the same feature structures used by the Snowsight app.
-
-5. **Deterministic Classification & Candidate Actions (Code Side)**
-   - **Implemented in this skill** (deterministic, no LLMs):
-     - `bp_findings` (grade, errors, warnings, workload type, bulk flags, etc.)
-     - `sql_findings` from static SQL analysis
-     - `coverage` list for relevant Hybrid Tables
-     - `history_context` / anomaly classification
-     - `candidate_actions`: a list of **allowed** concrete recommendations with:
-       - `id`, `kind`, `ddl_sql`, `estimated_impact`, `risk_level`
-     - **Root cause pre-classification** using `classify_single_query()` and `classify_run_pair()`
-     - **Field Manual context** loaded based on detected findings
-     - **Reasoning hints** for cross-finding causal chain analysis
-     - **Finding FAQs** for objection handling
-   - Implementation modules:
-     - `ht_analyzer/analysis.py` (orchestration)
-     - `ht_analyzer/analysis_shared.py` (best-practice logic)
-     - `ht_analyzer/analysis_shared_sql.py` (SQL analysis + coverage + plan hints)
-     - `ht_analyzer/snowvi_features.py` (SnowVI feature extraction + root cause classification)
-     - `ht_analyzer/reasoning_hints.py` (domain interaction rules)
-     - `ht_analyzer/field_manual_loader.py` (smart field manual content loading)
-     - `ht_analyzer/finding_faqs.py` (FAQ library for objection handling)
-
-6. **AI-Based Explanation (LLM)**
-   - Calls Snowflake Cortex via `ht_analyzer.llm` to generate:
-     - `next_steps_markdown` (ASE-facing steps)
-
-7. **Structured JSON Output (Actual)**
-   - The Python script returns JSON with this shape:
-
-```jsonc
-{
-  "status": "ok",
-  "schema_version": "1.0",
-  "analysis_mode": "single|compare",
-  "query_uuid": "string",
-  "comparison_uuid": "string | null",
-  "deployment": "string",
-  "snowvi_link": "string | null",
-  "customer_info": {
-    "name": "string | null",
-    "account_id": "string | null",
-    "deployment": "string"
-  },
-  "best_practices_summary": {
-    "grade": "A-F | null",
-    "score": "number | null",
-    "workload_type": "string | null",
-    "errors": 0,
-    "warnings": 0,
-    "passed": 0
-  },
-  "summary_markdown": "string",
-  "analysis": { /* includes bp_findings, sql_findings, coverage, history_context */ },
-  "history_table": [ /* optional: daily stats if include_history_table */ ],
-  "history_chart_markdown": "string | null",
-  "candidate_actions": [ /* allowed actions */ ],
-  "next_steps_markdown": "string",
-  
-  // New in v1.1: Enhanced analysis features
-  "root_cause_classification": {
-    "label": "OLTP_OPTIMAL | OLTP_SLOW | HYBRID_ANALYTIC | MISSING_INDEX | FDB_BOTTLENECK | ...",
-    "description": "Human-readable description of the classification"
-  },
-  "comparison_result": {
-    // Only present when analysis_mode="compare"
-    "primary_cause": "DATA_VOLUME | FDB_LATENCY | XP_EXECUTION_ENVIRONMENT | ...",
-    "primary_cause_description": "Human-readable explanation",
-    "secondary_cause": "string | null",
-    "diff": { /* metric deltas */ },
-    "diff_summary": "Formatted summary of metric differences"
-  },
-  "faqs": {
-    // FAQs keyed by finding rule name for objection handling
-    "NO_INDEX_FOR_HOT_PREDICATES": [{"question": "...", "answer": "..."}],
-    // ...
-  },
-  "prioritized_findings": ["NO_BOUND_VARIABLES", "ANALYTIC_WORKLOAD_ON_HT", ...]
-}
-```
-
-## Error & Status Contract
-
-All outputs include a `status` field:
-
-- `status: "ok"` for success
-- `status: "error"` for failures
-
-Errors also include:
-
-```json
-{
-  "status": "error",
-  "schema_version": "1.0",
-  "error_code": "INVALID_UUID | INVALID_COMPARISON_MODE | ANALYSIS_ERROR | CORTEX_ERROR",
-  "error_message": "string",
-  "details": { "optional": "object" }
-}
-```
-
-Include `schema_version` in both success and error payloads so downstream systems can evolve safely.
-
-8. **User-Facing Formatting**
-   - This skill returns JSON to the caller. Rendering is handled by the client.
-
-
-## Tools & Capabilities
-
-The skill is allowed to use:
-
-- **Snowflake-related tools**
-  - `snowflake_connections_list`
-  - `snowflake_switch_connection`
-  - `snowflake_query`
-- **Filesystem tools**
-  - `fs_read_file` / equivalent to load SnowVI JSON
-  - `fs_write_file` to persist JSON outputs or markdown reports
-- **Shell / Python**
-  - `shell` or python helpers to invoke:
-    - `python scripts/run_ht_analysis.py --uuid <UUID> [...]`
-- **User Interaction**
-  - `ask_user_question` to gather inputs interactively
-
-> **Implementation Note (for Cursor / devs):**  
-> The heavy lifting should live in `scripts/run_ht_analysis.py` (or a small package under `ht_analyzer/`). The skill itself should be mostly orchestration + prompt construction, not core logic.
-
-
-## Output Format
-
-The skill emits JSON only; clients can render `summary_markdown` and LLM outputs.
-
-
-## Example Conversations
-
-**Example 1 - Single UUID**
-
-> _User_:  
-> "Analyze Hybrid Table performance for UUID `01234567-89ab-cdef-0123-456789abcdef` and give me next steps for the SE."
-
-Skill behavior:
-
-1. Ask for deployment and/or attempt to auto-detect via Snowhouse.  
-2. Fetch metadata and run full analysis.  
-3. Return ASE-facing next steps + summary.
-
-
-**Example 2 - With SnowVI JSON**
-
-> _User_:  
-> "Use SnowVI export at `./snowvi/query-ht-1234.json` to do a deep analysis for UUID `0123abcd...`."
-
-Skill behavior:
-
-1. Load SnowVI JSON from the path.  
-2. Enrich features and coverage.  
-3. Run analysis.  
-4. Return ASE summary.
-
-
-**Example 3 - Before/After Comparison**
-
-> _User_:  
-> "Compare UUID `0123-old` vs `0123-new` and explain why the new run is faster."
-
-Skill behavior:
-
-1. Fetch metadata for both UUIDs.  
-2. Optionally load and compare SnowVI JSONs if provided.  
-3. Use the same pre-classified pair-comparison logic (`classify_run_pair`) as the app.  
-4. Return a side-by-side summary and an AI explanation of what changed.
-
-
-**Example 4 - Interactive Mode (No Inputs Provided)**
-
-> _User_:  
-> "Run the HT analyzer"
-
-Skill behavior:
-
-1. Use `ask_user_question` to prompt for Query UUID and optional SnowVI path.
-2. Use `ask_user_question` with multiSelect for analysis options (SnowVI link, history, debug).
-3. Construct the CLI command with selected flags.
-4. Execute analysis and return results.
-
-
-## Implementation Notes (for Cursor / Developers)
-
-- Reuse as much code as possible from the existing **Hybrid Table Query Analyzer** Streamlit app:
-  - Metadata fetch + deployment resolution
-  - SnowVI feature extraction and classification
-  - Plan cache / history context
-  - `ANALYSIS_SCHEMA` and `candidate_actions` construction
-  - "LLM as ranker/explainer" constraints
-- Keep the LLM-facing prompts **very close** to what the app uses to minimize behavior drift.
-- Ensure the Python module can be run both:
-  - From Cortex Code (via this skill), and
-  - In tests / notebooks, so you can validate outputs independently of the skill.
+- `references/workflow.md` - Detailed workflow steps
+- `references/json_schema.md` - Full output schema
+- `references/sql_fallback.md` - SQL queries for manual analysis
+- `ht_analyzer/field_manual/` - Finding-specific documentation
