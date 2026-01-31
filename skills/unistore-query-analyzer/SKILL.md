@@ -33,9 +33,9 @@ Analyze Hybrid Table query performance using Snowhouse telemetry and SnowVI enri
 }
 ```
 
-### Step 2: Lookup Query & Check SnowVI Availability
+### Step 2: Lookup Query & Fetch Full Metadata
 
-**If user did NOT provide a SnowVI JSON path**, first lookup the query and check if SnowVI data was persisted:
+**If user did NOT provide a SnowVI JSON path**, lookup the query and fetch all metadata:
 
 ```sql
 WITH params AS (
@@ -46,11 +46,18 @@ WITH params AS (
 SELECT
     q.uuid AS QUERY_ID,
     q.deployment AS DEPLOYMENT,
-    q.total_duration AS TOTAL_DURATION_MS,
     q.account_id AS ACCOUNT_ID,
     q.created_on AS QUERY_TIMESTAMP,
+    q.total_duration AS TOTAL_DURATION_MS,
+    q.dur_compiling AS DUR_COMPILING_MS,
+    q.dur_gs_executing AS DUR_GS_EXECUTING_MS,
+    q.dur_xp_executing AS DUR_XP_EXECUTING_MS,
+    q.access_kv_table AS ACCESS_KV_TABLE,
+    q.database_name AS DATABASE_NAME,
+    q.schema_name AS SCHEMA_NAME,
+    q.warehouse_name AS WAREHOUSE_NAME,
     q.query_parameterized_hash AS QUERY_HASH,
-    LEFT(q.description, 200) AS QUERY_PREVIEW,
+    LEFT(q.description, 300) AS QUERY_PREVIEW,
     BITAND(q.flags, 1125899906842624) = 0 AS SNOWVI_DATA_AVAILABLE,
     temp.perfsol.get_deployment_link(q.deployment, q.uuid) AS SNOWVI_LINK
 FROM SNOWHOUSE_IMPORT.PROD.JOB_ETL_V q
@@ -123,6 +130,35 @@ Then ask for the path, using the newest JSON file as the default (or fallback to
 }
 ```
 
+**After loading the JSON, verify it matches the query UUID:**
+
+```bash
+python3 -c "
+import json
+with open('<JSON_PATH>') as f:
+    d = json.load(f)
+query_id = d.get('queryData',{}).get('data',{}).get('globalInfo',{}).get('queryOverview',{}).get('id','')
+print(query_id)
+"
+```
+
+- If the JSON `id` matches `<QUERY_UUID>`, proceed with analysis
+- If it does NOT match, inform the user:
+
+```
+❌ **JSON mismatch:** The SnowVI JSON contains query ID `<JSON_QUERY_ID>` but you requested `<QUERY_UUID>`.
+```
+
+Then ask for a different file:
+
+```json
+{
+  "questions": [
+    {"header": "SnowVI JSON", "question": "Enter the path to a different SnowVI JSON file:", "type": "text", "defaultValue": "~/Downloads/snowvi-export.json"}
+  ]
+}
+```
+
 #### If `SNOWVI_DATA_AVAILABLE = false`:
 
 ```
@@ -162,36 +198,7 @@ Then continue directly to Step 4.
 }
 ```
 
-### Step 5: Fetch Full Query Metadata
-
-Use the `DEPLOYMENT`, `ACCOUNT_ID`, and `QUERY_TIMESTAMP` from Step 2:
-
-```sql
-SELECT
-    uuid AS QUERY_ID,
-    account_id AS ACCOUNT_ID,
-    total_duration AS TOTAL_DURATION_MS,
-    dur_compiling AS DUR_COMPILING_MS,
-    dur_gs_executing AS DUR_GS_EXECUTING_MS,
-    dur_xp_executing AS DUR_XP_EXECUTING_MS,
-    access_kv_table AS ACCESS_KV_TABLE,
-    database_name AS DATABASE_NAME,
-    schema_name AS SCHEMA_NAME,
-    warehouse_name AS WAREHOUSE_NAME,
-    LEFT(description, 500) AS QUERY_PREVIEW,
-    stats:stats.producedRows::NUMBER AS ROWS_PRODUCED,
-    stats:stats.snowTramFDBIOBytes::NUMBER AS FDB_IO_BYTES,
-    error_code AS ERROR_CODE,
-    query_parameterized_hash AS QUERY_HASH,
-    created_on AS CREATED_ON
-FROM SNOWHOUSE_IMPORT.<DEPLOYMENT>.JOB_ETL_JPS_V
-WHERE uuid = '<QUERY_UUID>'
-  AND account_id = <ACCOUNT_ID>
-  AND created_on BETWEEN DATEADD(minute, -20, '<QUERY_TIMESTAMP>'::timestamp) AND DATEADD(minute, 20, '<QUERY_TIMESTAMP>'::timestamp)
-LIMIT 1;
-```
-
-### Step 6: Fetch Query History (If Selected)
+### Step 5: Fetch Query History (If Selected)
 
 Use the `QUERY_HASH` and `ACCOUNT_ID` from Step 2:
 
@@ -217,7 +224,7 @@ GROUP BY execution_date
 ORDER BY execution_date DESC;
 ```
 
-### Step 7: Apply Analysis Heuristics
+### Step 6: Apply Analysis Heuristics
 
 | Metric | Threshold | Finding |
 |--------|-----------|---------|
@@ -226,6 +233,135 @@ ORDER BY execution_date DESC;
 | `FDB_IO_BYTES` > 10MB | High FDB I/O | Consider index optimization |
 | `ACCESS_KV_TABLE` = false | Not using HT path | Query may not benefit from HT |
 | `DUR_COMPILING_MS` > 200 | Slow compilation | Check for plan cache issues |
+
+### Step 7: Verify Best Practices
+
+Analyze the `QUERY_PREVIEW` (or full SQL from SnowVI JSON) for best practice violations:
+
+#### Check 1: Bind Parameters
+
+If the query contains predicates with literal values (e.g., `WHERE id = 123` or `WHERE name = 'foo'`), warn:
+
+```
+⚠️ **Literal values detected in predicates**
+
+The query uses literal values instead of bind parameters:
+- Example: `WHERE entity_name = 'CDed'`
+
+**Recommendation:** Use bind parameters (e.g., `WHERE entity_name = ?`) to:
+- Enable plan caching
+- Improve query reuse
+- Reduce compilation overhead
+```
+
+#### Check 2: CTEs with JOINs
+
+If the query uses a CTE (`WITH ... AS`) AND contains a JOIN between tables, warn:
+
+```
+⚠️ **CTE with JOIN detected**
+
+The query uses a Common Table Expression (CTE) with JOIN operations.
+
+**Warning:** Foreign key relationships defined on Hybrid Tables will NOT be used 
+when joining through CTEs. The optimizer cannot leverage FK constraints for 
+join elimination or cardinality estimation.
+
+**Recommendation:** Consider rewriting the query without CTEs if FK optimization is needed.
+```
+
+#### Detection Logic
+
+```python
+sql_text = "<QUERY_PREVIEW or full SQL from SnowVI>"
+sql_upper = sql_text.upper()
+
+# Check 1: Literal values in predicates
+has_literal_strings = re.search(r"=\s*'[^']+'", sql_text)
+has_literal_numbers = re.search(r"=\s*\d+(?!\d*-)", sql_text)
+uses_literals = has_literal_strings or has_literal_numbers
+
+# Check 2: CTE with JOIN
+has_cte = "WITH " in sql_upper and " AS " in sql_upper
+has_join = " JOIN " in sql_upper
+cte_with_join = has_cte and has_join
+```
+
+#### Additional Checks (SnowVI JSON Required)
+
+If the user provided a SnowVI JSON file, perform these additional checks:
+
+#### Check 3: Bind Parameter Type Mismatch
+
+Extract bind parameters and column types from the SnowVI JSON and verify they match:
+
+```python
+# Extract from SnowVI JSON
+operators = d.get('queryData',{}).get('data',{}).get('operators',{})
+# Look for parameter bindings and compare data types with table column definitions
+
+# Example warning if mismatch found:
+```
+
+```
+⚠️ **Bind parameter type mismatch**
+
+Parameter type does not match column type:
+- Column `user_id` is `NUMBER(38,0)` but parameter is `VARCHAR`
+
+**Impact:** Type mismatch can cause:
+- Implicit type conversion overhead
+- Index bypass (full table scan)
+- Incorrect results in edge cases
+
+**Recommendation:** Ensure application passes parameters with matching data types.
+```
+
+#### Check 4: Index Usage Verification
+
+For queries with predicates, verify that all scan nodes are using indexes:
+
+```python
+# Extract operators from SnowVI JSON
+operators = d.get('queryData',{}).get('data',{}).get('operators',{})
+
+# Check each operator for scan type
+for op_id, op in operators.items():
+    op_type = op.get('operatorType', '')
+    # Look for: RowScan, TableScan, IndexScan, etc.
+    # Check if 'indexName' or similar field is present
+```
+
+**If a predicate exists but no index is used:**
+
+```
+⚠️ **No index used for predicate**
+
+The query has filter predicates but is not using an index:
+- Operator: `TableScan` on `full_load_notifications`
+- Predicate: `entity_name = ?`
+
+**Expected:** `RowScan` or `IndexScan` with index name
+
+**Impact:** Full table scan instead of index lookup causes:
+- Higher latency
+- Increased FDB I/O
+- Poor scalability as table grows
+
+**Recommendation:** 
+1. Verify an index exists on the filtered column(s)
+2. Check if predicate data type matches index column type
+3. Consider creating index: `CREATE INDEX idx_entity ON table(entity_name)`
+```
+
+**If ROW SCAN is used with an index:**
+
+```
+✅ **Index used for predicate**
+
+- Operator: `RowScan` using index `idx_entity_processed`
+- Predicate: `entity_name = ? AND is_processed = ?`
+```
 
 ## Step 8: Log Telemetry (REQUIRED)
 
